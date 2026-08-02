@@ -18,7 +18,11 @@ os.environ.setdefault("ZENSCAT_QT_BINDING", "PySide6")
 
 from zenscat.core import DiffractionResult
 from zenscat.gui import MainWindow
-from zenscat.gui.main_window import COMBO_POPUP_STYLE, ValidationResult
+from zenscat.gui.main_window import (
+    COMBO_POPUP_STYLE,
+    PROFILE_INTERFACE_DESCRIPTIONS,
+    ValidationResult,
+)
 from zenscat.gui.qt_compat import (
     QT_BINDING,
     QApplication,
@@ -419,6 +423,40 @@ def test_shell_contains_editable_legacy_stack_and_scientific_controls(
     _process_events()
     assert layer_table.rowCount() == 2
 
+    window.close()
+
+
+def test_interface_selection_refreshes_distinct_live_profile_geometry(
+    app: QApplication,
+) -> None:
+    window = MainWindow()
+    window.resize(1280, 812)
+    window.show()
+    _process_events()
+
+    guide = window.findChild(QLabel, "interfaceGuideLabel")
+    assert guide is not None
+    for interface, description in PROFILE_INTERFACE_DESCRIPTIONS.items():
+        assert interface in guide.text()
+        assert description in guide.text()
+
+    signatures: set[bytes] = set()
+    for interface, description in PROFILE_INTERFACE_DESCRIPTIONS.items():
+        window.interface_combo.setCurrentText(interface)
+        _process_events()
+
+        project_geometry = window.project_device_plot.profile_geometry()
+        device_geometry = window.structure_plot.profile_geometry()
+        assert project_geometry is not None
+        assert device_geometry is not None
+        np.testing.assert_array_equal(project_geometry[0], device_geometry[0])
+        np.testing.assert_array_equal(project_geometry[1], device_geometry[1])
+        assert interface in window.project_device_plot.accessibleName()
+        assert description in window.project_device_plot.accessibleName()
+        assert description in window.interface_combo.toolTip()
+        signatures.add(np.round(project_geometry[1], decimals=12).tobytes())
+
+    assert len(signatures) == len(PROFILE_INTERFACE_DESCRIPTIONS)
     window.close()
 
 

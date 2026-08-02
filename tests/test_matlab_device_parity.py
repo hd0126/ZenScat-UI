@@ -6,7 +6,12 @@ from pathlib import Path
 import numpy as np
 from scipy.io import loadmat
 
-from zenscat.core.device import InterfaceParams, build_legacy_device, build_legacy_grid
+from zenscat.core.device import (
+    InterfaceParams,
+    build_legacy_device,
+    build_legacy_grid,
+    sample_interface_profile,
+)
 
 GOLDEN_PATH = Path(__file__).parent / "golden" / "zenscat_matlab_golden.mat"
 VARIANT_GOLDEN_PATH = Path(__file__).parent / "golden" / "zenscat_device_variant_goldens.mat"
@@ -81,6 +86,28 @@ def _interface_params(config) -> InterfaceParams:
         triangle_w2=float(_mat_number(config.triangle_w2)),
         triangle_w3=float(_mat_number(config.triangle_w3)),
     )
+
+
+def test_public_interface_sampler_exposes_distinct_legacy_shapes() -> None:
+    signatures: set[bytes] = set()
+
+    for interface in ("sin", "DE1", "DE4", "tri"):
+        x_um, z_um = sample_interface_profile(
+            interface,
+            period_um=0.32,
+            height_um=0.154,
+            sample_count=256,
+        )
+
+        assert x_um.shape == (256,)
+        assert z_um.shape == x_um.shape
+        assert np.all(np.isfinite(z_um))
+        assert x_um[0] == -0.16
+        assert x_um[-1] == 0.16
+        assert np.ptp(z_um) > 0.05
+        signatures.add(np.round(z_um, decimals=12).tobytes())
+
+    assert len(signatures) == 4
 
 
 def test_python_device_geometry_matches_matlab_golden_arrays_and_checksums():

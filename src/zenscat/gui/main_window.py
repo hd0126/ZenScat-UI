@@ -31,6 +31,7 @@ from .qt_compat import (
     QMainWindow,
     QObject,
     QPainter,
+    QPainterPath,
     QPalette,
     QPen,
     QPushButton,
@@ -77,6 +78,21 @@ PROJECT_WORKFLOW_PAGES = {
     "fdfd_fields": "FDFD Fields",
     "casual_phc_rcwa": "RCWA Sweep",
 }
+
+PROFILE_INTERFACE_DESCRIPTIONS = {
+    "sin": "sinusoid",
+    "DE1": "trapezium",
+    "DE4": "soft trapezium / super-Gaussian",
+    "tri": "triangle",
+}
+
+PROFILE_LAYER_COLORS = (
+    "#2b8fb8",
+    "#dfa044",
+    "#7c6bb3",
+    "#4a9a78",
+    "#c36c75",
+)
 
 APP_STYLE = """
 QMainWindow, QWidget#rootShell {
@@ -329,19 +345,68 @@ class PlotPreview(QWidget):
         self._profile_thicknesses = np.asarray([0.182, 0.120], dtype=np.float64)
         self._profile_indices = np.asarray([1.781, 1.650], dtype=np.float64)
         self._profile_interface = "sin"
+        self._profile_x_um: np.ndarray | None = None
+        self._profile_z_um: np.ndarray | None = None
+        self._profile_period_um = 0.32
+        self._profile_height_um = 0.154
+        self._profile_n_superstrate = 1.0
+        self._profile_n_substrate = 1.516
         self.setAccessibleName(
             title if mode == "stack" else f"{title}: {self._watermark}"
         )
-        self.setMinimumHeight(210)
+        self.setMinimumHeight(260 if mode == "stack" else 210)
 
     def set_profile(
-        self, thicknesses: np.ndarray, indices: np.ndarray, interface: str
+        self,
+        thicknesses: np.ndarray,
+        indices: np.ndarray,
+        interface: str,
+        *,
+        x_um: np.ndarray | None = None,
+        z_um: np.ndarray | None = None,
+        period_um: float = 0.32,
+        height_um: float = 0.154,
+        n_superstrate: float = 1.0,
+        n_substrate: float = 1.516,
     ) -> None:
         self._profile_thicknesses = np.asarray(thicknesses, dtype=np.float64)
         self._profile_indices = np.asarray(indices, dtype=np.float64)
         self._profile_interface = interface
-        self.setAccessibleName(f"{self._title}: {interface} profile")
+        self._profile_x_um = (
+            None if x_um is None else np.asarray(x_um, dtype=np.float64).copy()
+        )
+        self._profile_z_um = (
+            None if z_um is None else np.asarray(z_um, dtype=np.float64).copy()
+        )
+        if (self._profile_x_um is None) != (self._profile_z_um is None):
+            raise ValueError("profile x and z coordinates must be provided together")
+        if (
+            self._profile_x_um is not None
+            and self._profile_x_um.shape != self._profile_z_um.shape
+        ):
+            raise ValueError("profile x and z coordinates must have matching shapes")
+        self._profile_period_um = float(period_um)
+        self._profile_height_um = float(height_um)
+        self._profile_n_superstrate = float(n_superstrate)
+        self._profile_n_substrate = float(n_substrate)
+        description = PROFILE_INTERFACE_DESCRIPTIONS.get(interface, interface)
+        index_text = ", ".join(f"{value:.4g}" for value in self._profile_indices)
+        accessible = (
+            f"{self._title}: {interface} profile ({description}); "
+            f"period {self._profile_period_um:.4g} um; "
+            f"height {self._profile_height_um:.4g} um; "
+            f"{self._profile_thicknesses.size} layers; indices {index_text}"
+        )
+        self.setAccessibleName(accessible)
+        self.setToolTip(accessible)
         self.update()
+
+    def profile_geometry(self) -> tuple[np.ndarray, np.ndarray] | None:
+        """Return a defensive copy of the currently displayed analytic curve."""
+
+        if self._profile_x_um is None or self._profile_z_um is None:
+            return None
+        return self._profile_x_um.copy(), self._profile_z_um.copy()
 
     def clear_results(self) -> None:
         self._transmission = None
@@ -391,7 +456,7 @@ class PlotPreview(QWidget):
         painter.setPen(QPen(QColor("#c6d2dc"), 1))
         painter.drawRoundedRect(QRectF(rect), 8, 8)
 
-        plot = rect.adjusted(46, 34, -18, -38)
+        plot = rect.adjusted(52, 74 if self._mode == "stack" else 34, -18, -38)
         painter.setPen(QPen(QColor("#9aaab7"), 1))
         painter.drawLine(plot.bottomLeft(), plot.bottomRight())
         painter.drawLine(plot.bottomLeft(), plot.topLeft())
@@ -407,39 +472,27 @@ class PlotPreview(QWidget):
         painter.drawText(
             rect.adjusted(14, 10, -14, -10), Qt.AlignmentFlag.AlignTop, self._title
         )
+        if self._mode == "stack":
+            self._draw_profile_header(painter, rect)
         painter.setPen(QPen(QColor("#607282"), 1))
+        x_label = self._x_label
+        y_label = self._y_label
+        if self._mode == "stack":
+            x_label = f"one period  {self._profile_period_um:.4g} um"
+            y_label = f"height {self._profile_height_um:.4g} um"
         painter.drawText(
             rect.adjusted(14, 0, -14, -10),
             Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter,
-            self._x_label,
+            x_label,
         )
         painter.save()
-        painter.translate(14, plot.center().y() + 32)
+        painter.translate(12, plot.center().y() + 46)
         painter.rotate(-90)
-        painter.drawText(
-            QRectF(0, 0, 120, 18), Qt.AlignmentFlag.AlignCenter, self._y_label
-        )
+        painter.drawText(QRectF(0, 0, 150, 18), Qt.AlignmentFlag.AlignCenter, y_label)
         painter.restore()
 
         if self._mode == "stack":
-            thicknesses = np.maximum(self._profile_thicknesses, 1e-9)
-            indices = np.resize(self._profile_indices, thicknesses.shape)
-            total = float(np.sum(thicknesses))
-            y = float(plot.top())
-            for idx, thickness in enumerate(thicknesses):
-                height = max(12.0, float(plot.height()) * float(thickness) / total)
-                shade = min(235, 110 + int(indices[idx] * 45))
-                layer = QRectF(plot.left(), y, plot.width(), height)
-                painter.fillRect(layer, QColor(70, shade - 25, shade))
-                painter.setPen(QPen(QColor("#ffffff"), 1))
-                painter.drawRect(layer)
-                y += height
-            painter.setPen(QPen(QColor("#223747"), 1))
-            painter.drawText(
-                QRectF(plot),
-                Qt.AlignmentFlag.AlignCenter,
-                f"{self._profile_interface} analytic profile",
-            )
+            self._draw_profile_cross_section(painter, plot)
         elif self._heatmap is not None:
             self._draw_heatmap(painter, plot, self._heatmap)
             painter.setPen(QPen(QColor("#223747"), 1))
@@ -468,6 +521,163 @@ class PlotPreview(QWidget):
             painter.drawText(plot.left() + 10, plot.top() + 18, "TRN0")
             painter.setPen(QPen(QColor("#b66d2d"), 2))
             painter.drawText(plot.left() + 68, plot.top() + 18, "REF0")
+
+    def _draw_profile_header(self, painter: QPainter, rect) -> None:
+        description = PROFILE_INTERFACE_DESCRIPTIONS.get(
+            self._profile_interface, self._profile_interface
+        )
+        painter.setPen(QPen(QColor("#607282"), 1))
+        painter.drawText(
+            QRectF(rect.left() + 14, rect.top() + 30, rect.width() - 28, 18),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            "One lateral period; color = refractive index; curves = layer interfaces.",
+        )
+
+        badge_text = f"{self._profile_interface}  |  {description}"
+        badge_width = painter.fontMetrics().horizontalAdvance(badge_text) + 20
+        badge = QRectF(
+            rect.right() - badge_width - 14,
+            rect.top() + 8,
+            badge_width,
+            22,
+        )
+        painter.fillRect(badge, QColor("#e7f1f6"))
+        painter.setPen(QPen(QColor("#9ebdce"), 1))
+        painter.drawRoundedRect(badge, 7, 7)
+        painter.setPen(QPen(QColor("#24485f"), 1))
+        painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, badge_text)
+
+        entries = [
+            (QColor("#f1f5f7"), f"ambient n={self._profile_n_superstrate:.4g}"),
+        ]
+        indices = np.resize(self._profile_indices, self._profile_thicknesses.shape)
+        for index, refractive_index in enumerate(indices[:3]):
+            entries.append(
+                (
+                    QColor(PROFILE_LAYER_COLORS[index % len(PROFILE_LAYER_COLORS)]),
+                    f"L{index + 1} n={refractive_index:.4g}",
+                )
+            )
+        entries.append(
+            (QColor("#718493"), f"substrate n={self._profile_n_substrate:.4g}")
+        )
+
+        x = float(rect.left() + 14)
+        y = float(rect.top() + 52)
+        for color, label in entries:
+            label_width = painter.fontMetrics().horizontalAdvance(label)
+            if x + label_width + 24 > rect.right() - 14:
+                break
+            swatch = QRectF(x, y, 11, 11)
+            painter.fillRect(swatch, color)
+            painter.setPen(QPen(QColor("#71818d"), 1))
+            painter.drawRect(swatch)
+            painter.setPen(QPen(QColor("#344957"), 1))
+            painter.drawText(
+                QRectF(x + 16, y - 2, label_width + 2, 16),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                label,
+            )
+            x += label_width + 34
+
+    def _draw_profile_cross_section(self, painter: QPainter, plot) -> None:
+        thicknesses = np.maximum(self._profile_thicknesses, 1e-9)
+        if self._profile_x_um is None or self._profile_z_um is None:
+            x_um = np.linspace(-0.5, 0.5, 64)
+            z_um = np.zeros_like(x_um)
+        else:
+            x_um = self._profile_x_um
+            z_um = self._profile_z_um
+
+        cumulative = np.concatenate(([0.0], np.cumsum(thicknesses)))
+        boundaries = [z_um - offset for offset in cumulative]
+        stack_span = max(
+            float(np.max(boundaries[0]) - np.min(boundaries[-1])),
+            self._profile_height_um + float(np.sum(thicknesses)),
+            1e-9,
+        )
+        padding = 0.10 * stack_span
+        z_max = float(np.max(boundaries[0])) + padding
+        z_min = float(np.min(boundaries[-1])) - padding
+        x_min = float(np.min(x_um))
+        x_span = max(float(np.ptp(x_um)), 1e-9)
+        z_span = max(z_max - z_min, 1e-9)
+
+        px = plot.left() + (x_um - x_min) / x_span * plot.width()
+
+        def map_y(values: np.ndarray) -> np.ndarray:
+            return plot.bottom() - (values - z_min) / z_span * plot.height()
+
+        mapped = [map_y(boundary) for boundary in boundaries]
+
+        ambient = QPainterPath()
+        ambient.moveTo(float(plot.left()), float(plot.top()))
+        ambient.lineTo(float(plot.right()), float(plot.top()))
+        for x_value, y_value in zip(px[::-1], mapped[0][::-1], strict=True):
+            ambient.lineTo(float(x_value), float(y_value))
+        ambient.closeSubpath()
+        painter.fillPath(ambient, QColor("#f1f5f7"))
+
+        for index in range(len(thicknesses)):
+            band = QPainterPath()
+            band.moveTo(float(px[0]), float(mapped[index][0]))
+            for x_value, y_value in zip(px[1:], mapped[index][1:], strict=True):
+                band.lineTo(float(x_value), float(y_value))
+            for x_value, y_value in zip(px[::-1], mapped[index + 1][::-1], strict=True):
+                band.lineTo(float(x_value), float(y_value))
+            band.closeSubpath()
+            painter.fillPath(
+                band,
+                QColor(PROFILE_LAYER_COLORS[index % len(PROFILE_LAYER_COLORS)]),
+            )
+
+        substrate = QPainterPath()
+        substrate.moveTo(float(px[0]), float(mapped[-1][0]))
+        for x_value, y_value in zip(px[1:], mapped[-1][1:], strict=True):
+            substrate.lineTo(float(x_value), float(y_value))
+        substrate.lineTo(float(plot.right()), float(plot.bottom()))
+        substrate.lineTo(float(plot.left()), float(plot.bottom()))
+        substrate.closeSubpath()
+        painter.fillPath(substrate, QColor("#718493"))
+
+        painter.setPen(QPen(QColor("#d7e0e6"), 1))
+        center_x = plot.center().x()
+        painter.drawLine(int(center_x), plot.top(), int(center_x), plot.bottom())
+        painter.setPen(QPen(QColor("#263f4e"), 1))
+        painter.drawRect(plot)
+        for index, y_values in enumerate(mapped):
+            boundary_path = QPainterPath()
+            boundary_path.moveTo(float(px[0]), float(y_values[0]))
+            for x_value, y_value in zip(px[1:], y_values[1:], strict=True):
+                boundary_path.lineTo(float(x_value), float(y_value))
+            painter.setPen(
+                QPen(
+                    QColor("#17384b" if index == 0 else "#ffffff"),
+                    2 if index == 0 else 1,
+                )
+            )
+            painter.drawPath(boundary_path)
+
+        ambient_label = QRectF(plot.left() + 8, plot.top() + 6, 82, 20)
+        painter.fillRect(ambient_label, QColor("#f8fafb"))
+        painter.setPen(QPen(QColor("#a8b7c1"), 1))
+        painter.drawRoundedRect(ambient_label, 4, 4)
+        painter.setPen(QPen(QColor("#334c5b"), 1))
+        painter.drawText(
+            ambient_label,
+            Qt.AlignmentFlag.AlignCenter,
+            "ambient",
+        )
+        substrate_label = QRectF(plot.left() + 8, plot.bottom() - 26, 88, 20)
+        painter.fillRect(substrate_label, QColor("#607786"))
+        painter.setPen(QPen(QColor("#dce5ea"), 1))
+        painter.drawRoundedRect(substrate_label, 4, 4)
+        painter.setPen(QPen(QColor("#ffffff"), 1))
+        painter.drawText(
+            substrate_label,
+            Qt.AlignmentFlag.AlignCenter,
+            "substrate",
+        )
 
     def _draw_series(
         self, painter: QPainter, plot, values: np.ndarray, color: QColor
@@ -1153,6 +1363,7 @@ class MainWindow(QMainWindow):
         self.interface_combo.setObjectName("interfaceCombo")
         self.interface_combo.addItems(("sin", "DE1", "DE4", "tri"))
         self._configure_combo(self.interface_combo)
+        self._configure_interface_combo(self.interface_combo)
         self.distribution_combo = QComboBox()
         self.distribution_combo.setObjectName("distributionCombo")
         self.distribution_combo.addItems(("all", "two"))
@@ -1165,6 +1376,14 @@ class MainWindow(QMainWindow):
         form.addRow("Interface", self.interface_combo)
         form.addRow("Distribution", self.distribution_combo)
         setup_card.layout().addLayout(form)
+        self.interface_guide_label = QLabel(
+            "Interface shapes — sin: sinusoid · DE1: trapezium · "
+            "DE4: soft trapezium / super-Gaussian · tri: triangle"
+        )
+        self.interface_guide_label.setObjectName("interfaceGuideLabel")
+        self.interface_guide_label.setProperty("class", "muted")
+        self.interface_guide_label.setWordWrap(True)
+        setup_card.layout().addWidget(self.interface_guide_label)
         self.import_source_label = QLabel("No imported device loaded.")
         self.import_source_label.setObjectName("importSourceLabel")
         self.import_source_label.setProperty("class", "muted")
@@ -1517,6 +1736,7 @@ class MainWindow(QMainWindow):
         self.fdfd_interface_combo.setObjectName("fdfdInterfaceCombo")
         self.fdfd_interface_combo.addItems(("sin", "DE1", "DE4", "tri"))
         self._configure_combo(self.fdfd_interface_combo)
+        self._configure_interface_combo(self.fdfd_interface_combo)
         self.fdfd_palette_combo = QComboBox()
         self.fdfd_palette_combo.setObjectName("fdfdPaletteCombo")
         self.fdfd_palette_combo.addItems(
@@ -1694,6 +1914,24 @@ class MainWindow(QMainWindow):
         if combo.isEditable():
             combo.setToolTip(combo.currentText())
             combo.editTextChanged.connect(combo.setToolTip)
+
+    def _configure_interface_combo(self, combo: QComboBox) -> None:
+        def update_tooltip(interface: str) -> None:
+            description = PROFILE_INTERFACE_DESCRIPTIONS.get(interface, interface)
+            tooltip = f"{interface} — {description}"
+            combo.setToolTip(tooltip)
+            combo.setAccessibleDescription(tooltip)
+
+        for index in range(combo.count()):
+            interface = combo.itemText(index)
+            description = PROFILE_INTERFACE_DESCRIPTIONS.get(interface, interface)
+            combo.setItemData(
+                index,
+                f"{interface} — {description}",
+                Qt.ItemDataRole.ToolTipRole,
+            )
+        update_tooltip(combo.currentText())
+        combo.currentTextChanged.connect(update_tooltip)
 
     def _refresh_combo_popup_widths(self) -> None:
         for combo in self.findChildren(QComboBox):
@@ -2744,16 +2982,44 @@ class MainWindow(QMainWindow):
             device = inputs.imported_device
             thicknesses = np.asarray(device.sub_L_um, dtype=np.float64)
             indices = np.sqrt(np.maximum(np.mean(np.real(device.ER), axis=1), 0.0))
-            self.structure_plot.set_profile(thicknesses, indices, "imported device")
+            profile_kwargs = {
+                "period_um": float(device.Lx_um),
+                "height_um": float(np.sum(thicknesses)),
+                "n_superstrate": inputs.n_superstrate,
+                "n_substrate": inputs.n_substrate,
+            }
+            self.structure_plot.set_profile(
+                thicknesses, indices, "imported device", **profile_kwargs
+            )
             self.project_device_plot.set_profile(
-                thicknesses, indices, "imported device"
+                thicknesses, indices, "imported device", **profile_kwargs
             )
             return
+        from zenscat.core import sample_interface_profile
+
         layer_count = max(inputs.layer_count, 1)
         thicknesses = np.asarray(inputs.params[:layer_count], dtype=np.float64)
         indices = np.asarray(inputs.params[layer_count:], dtype=np.float64)
-        self.structure_plot.set_profile(thicknesses, indices, inputs.interface)
-        self.project_device_plot.set_profile(thicknesses, indices, inputs.interface)
+        x_um, z_um = sample_interface_profile(
+            inputs.interface,
+            period_um=inputs.period_um,
+            height_um=inputs.height_um,
+            sample_count=256,
+        )
+        profile_kwargs = {
+            "x_um": x_um,
+            "z_um": z_um,
+            "period_um": inputs.period_um,
+            "height_um": inputs.height_um,
+            "n_superstrate": inputs.n_superstrate,
+            "n_substrate": inputs.n_substrate,
+        }
+        self.structure_plot.set_profile(
+            thicknesses, indices, inputs.interface, **profile_kwargs
+        )
+        self.project_device_plot.set_profile(
+            thicknesses, indices, inputs.interface, **profile_kwargs
+        )
 
     def _update_live_metrics(self) -> None:
         if not hasattr(self, "metricBackendValue"):
@@ -2890,6 +3156,12 @@ class MainWindow(QMainWindow):
         angles = self._format_range(
             inputs.angle_start_deg, inputs.angle_stop_deg, "deg"
         )
+        interface_description = PROFILE_INTERFACE_DESCRIPTIONS.get(
+            inputs.interface, inputs.interface
+        )
+        fdfd_interface_description = PROFILE_INTERFACE_DESCRIPTIONS.get(
+            inputs.fdfd_interface, inputs.fdfd_interface
+        )
         header = (
             "Context inspector\n"
             f"Section: {current}\n"
@@ -2909,7 +3181,8 @@ class MainWindow(QMainWindow):
                 )
             return (
                 header + f"RCWA: {inputs.matrix_method}/{inputs.polarization}, "
-                f"{inputs.interface}, {inputs.distribution}\n"
+                f"{inputs.interface} ({interface_description}), "
+                f"{inputs.distribution}\n"
                 f"Grid: {inputs.harmonics} harmonics, Nx {inputs.nx}, Nz {inputs.nz}\n"
                 f"Sweep: {sweep}, {angles}, {inputs.sweep_points} points\n\n"
                 "Validate builds the analytic or imported RCWA request. Run computes "
@@ -2928,7 +3201,8 @@ class MainWindow(QMainWindow):
             )
         if current == "FDFD Fields":
             return (
-                header + f"FDFD: {inputs.fdfd_interface}, {inputs.fdfd_palette}, "
+                header + f"FDFD: {inputs.fdfd_interface} "
+                f"({fdfd_interface_description}), {inputs.fdfd_palette}, "
                 f"{inputs.polarization} mode\n"
                 f"Domain: period {self._format_number(inputs.period_um)} um, "
                 f"height {self._format_number(inputs.height_um)} um, "
@@ -2960,6 +3234,7 @@ class MainWindow(QMainWindow):
         return (
             header + f"Device: {inputs.layer_count} analytic layers, "
             f"Params {list(inputs.params)}\n"
+            f"Interface: {inputs.interface} ({interface_description})\n"
             f"Media: ambient n {self._format_number(inputs.n_superstrate)}, "
             f"substrate n {self._format_number(inputs.n_substrate)}\n"
             f"Sweep: {sweep}, {angles}, {inputs.sweep_points} points\n\n"

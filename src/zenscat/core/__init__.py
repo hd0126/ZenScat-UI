@@ -7,6 +7,7 @@ from .device import (
     LegacyGrid,
     build_legacy_device,
     build_legacy_grid,
+    sample_interface_profile,
 )
 from .fdfd2d import (
     DEFAULT_DISPERSION_COEFFICIENTS,
@@ -83,5 +84,6 @@ __all__ = [
     "launch_rcwa_s_phc",
     "launch_rcwa_t",
     "redheffer_star",
+    "sample_interface_profile",
     "yeeder2d",
 ]

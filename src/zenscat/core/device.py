@@ -186,6 +186,38 @@ def build_legacy_grid(
     )
 
 
+def sample_interface_profile(
+    interface: Interface,
+    *,
+    period_um: float,
+    height_um: float,
+    sample_count: int = 256,
+    interface_params: InterfaceParams | None = None,
+) -> tuple[FloatArray, FloatArray]:
+    """Sample one lateral period of a legacy analytic interface in micrometers.
+
+    The preview and solver share this entry point so the displayed silhouette
+    cannot drift from the MATLAB-compatible device geometry.  An even sample
+    count preserves the legacy DE1 mirror construction exactly.
+    """
+
+    if sample_count < 2 or sample_count % 2:
+        raise ValueError("sample_count must be an even integer greater than one")
+    grid = build_legacy_grid(
+        [height_um, 1.0],
+        layer_num=1,
+        interface=interface,
+        Lx=period_um,
+        h=height_um,
+        Nx=sample_count,
+        Nz=1,
+        Lam0=[1e-6],
+        Theta=[0.0],
+    )
+    params = InterfaceParams() if interface_params is None else interface_params
+    return grid.x.copy(), _interface_profile(grid, interface, params).copy()
+
+
 def build_legacy_device(
     harmonic_count: int,
     grid: LegacyGrid,

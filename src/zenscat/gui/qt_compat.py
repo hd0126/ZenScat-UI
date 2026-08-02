@@ -23,7 +23,7 @@ try:  # pragma: no cover - exercised when PySide6 is installed.
         QTimer,
         Signal,
     )
-    from PySide6.QtGui import QAction, QColor, QPainter, QPalette, QPen
+    from PySide6.QtGui import QAction, QColor, QPainter, QPainterPath, QPalette, QPen
     from PySide6.QtWidgets import (
         QAbstractSpinBox,
         QApplication,
@@ -70,7 +70,7 @@ except ImportError:  # pragma: no cover - environment dependent.
     from PyQt6.QtCore import (
         pyqtSignal as Signal,
     )
-    from PyQt6.QtGui import QAction, QColor, QPainter, QPalette, QPen
+    from PyQt6.QtGui import QAction, QColor, QPainter, QPainterPath, QPalette, QPen
     from PyQt6.QtWidgets import (
         QAbstractSpinBox,
         QApplication,
@@ -125,6 +125,7 @@ __all__ = [
     "QMainWindow",
     "QObject",
     "QPainter",
+    "QPainterPath",
     "QPalette",
     "QPen",
     "QPushButton",
