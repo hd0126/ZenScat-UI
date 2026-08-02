@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import time
@@ -17,7 +18,7 @@ os.environ.setdefault("ZENSCAT_QT_BINDING", "PySide6")
 
 from zenscat.core import DiffractionResult
 from zenscat.gui import MainWindow
-from zenscat.gui.main_window import ValidationResult
+from zenscat.gui.main_window import COMBO_POPUP_STYLE, ValidationResult
 from zenscat.gui.qt_compat import (
     QT_BINDING,
     QApplication,
@@ -25,7 +26,10 @@ from zenscat.gui.qt_compat import (
     QCoreApplication,
     QDoubleSpinBox,
     QLabel,
+    QListView,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QSpinBox,
     Qt,
     QTableWidget,
@@ -117,7 +121,9 @@ class _LegacyExportRun:
     def __init__(self, bundle: LegacyResultBundle | object | None = None) -> None:
         self._bundle = bundle or _empty_legacy_bundle()
 
-    def legacy_bundle(self, params: object | None = None) -> LegacyResultBundle | object:
+    def legacy_bundle(
+        self, params: object | None = None
+    ) -> LegacyResultBundle | object:
         return self._bundle
 
 
@@ -146,6 +152,16 @@ def test_main_window_exposes_precision_lab_shell(app: QApplication) -> None:
         "Jobs",
     ]
     assert window.workspace.count() == 7
+    assert set(window._pages) == {
+        "Project",
+        "Device",
+        "RCWA Sweep",
+        "Optimize",
+        "FDFD Fields",
+        "Results",
+        "Jobs",
+    }
+    assert window.workspace.widget(0).objectName() == "projectScrollArea"
     assert window.findChild(QPushButton, "validateButton") is not None
     assert window.findChild(QPushButton, "runButton").isEnabled() is False
     assert window.findChild(QPushButton, "cancelButton").isEnabled() is False
@@ -153,6 +169,189 @@ def test_main_window_exposes_precision_lab_shell(app: QApplication) -> None:
     assert window.findChild(QPushButton, "openProjectButton") is not None
     assert window.findChild(QPushButton, "saveProjectButton") is not None
     assert window.findChild(QPushButton, "loadImportButton") is not None
+
+    window.close()
+
+
+@pytest.mark.parametrize("window_size", [(1282, 1075), (1280, 780)])
+def test_workspace_combos_keep_readable_widths(
+    app: QApplication, window_size: tuple[int, int]
+) -> None:
+    window = MainWindow()
+    window.resize(*window_size)
+    window.show()
+    _process_events()
+
+    for combo in window.findChildren(QComboBox):
+        if combo.objectName() not in {
+            "backendCombo",
+            "projectNameCombo",
+            "sourceCombo",
+            "methodCombo",
+            "interfaceCombo",
+            "distributionCombo",
+            "modeCombo",
+            "phcShapeCombo",
+            "phcRepeatCombo",
+            "optimizationObjectiveCombo",
+            "fdfdInterfaceCombo",
+            "fdfdPaletteCombo",
+            "fdfdFieldCombo",
+            "resultFamilyCombo",
+            "resultOrderCombo",
+        }:
+            continue
+        text_width = max(
+            (
+                combo.fontMetrics().horizontalAdvance(combo.itemText(index))
+                for index in range(combo.count())
+            ),
+            default=combo.fontMetrics().horizontalAdvance(combo.currentText()),
+        )
+        popup_width = max(combo.view().sizeHintForColumn(0), text_width)
+        assert combo.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+        assert combo.minimumWidth() >= text_width
+        assert combo.view().minimumWidth() >= popup_width
+
+    window.close()
+
+
+def test_combo_popup_selection_colors_are_explicit() -> None:
+    def style_block(selector: str) -> str:
+        match = re.search(rf"{re.escape(selector)}\s*\{{([^}}]*)\}}", COMBO_POPUP_STYLE)
+        assert match is not None
+        return match.group(1)
+
+    popup = style_block("QListView")
+    assert "selection-background-color: #b9dce9;" in popup
+    assert "selection-color: #17212b;" in popup
+
+    hover = style_block("QListView::item:hover")
+    assert "background-color: #b9dce9;" in hover
+    assert "color: #17212b;" in hover
+    assert "font-weight: 600;" in hover
+
+    selected = style_block("QListView::item:selected")
+    assert "background-color: #b9dce9;" in selected
+    assert "color: #17212b;" in selected
+    assert "font-weight: 600;" in selected
+
+
+def test_workspace_combos_use_hoverable_non_native_popup_views(
+    app: QApplication,
+) -> None:
+    window = MainWindow()
+    window.show()
+    _process_events()
+
+    for combo in window.findChildren(QComboBox):
+        popup_view = combo.view()
+        assert isinstance(popup_view, QListView)
+        assert popup_view.metaObject().className() == "QListView"
+        assert popup_view.objectName() == f"{combo.objectName()}PopupView"
+        assert popup_view.hasMouseTracking()
+        assert popup_view.viewport().hasMouseTracking()
+        assert popup_view.styleSheet() == COMBO_POPUP_STYLE
+
+        selected_index = combo.currentIndex()
+        if combo.count() > 1:
+            highlighted_index = combo.model().index(
+                (selected_index + 1) % combo.count(), 0
+            )
+            popup_view.setCurrentIndex(highlighted_index)
+            assert combo.currentIndex() == selected_index
+
+    window.close()
+
+
+def test_editable_project_combo_resizes_for_loaded_name(app: QApplication) -> None:
+    window = MainWindow()
+    window.resize(1280, 812)
+    window.show()
+    _process_events()
+
+    loaded_name = "Loaded multilayer RCWA characterization study"
+    window.project_name.setCurrentText(loaded_name)
+    window._refresh_combo_popup_widths()
+    required_width = window.project_name.fontMetrics().horizontalAdvance(loaded_name)
+    setup_card = window.findChild(QWidget, "projectSetupCard")
+    combo_rect = window.project_name.rect().translated(
+        window.project_name.mapTo(setup_card, window.project_name.rect().topLeft())
+    )
+
+    assert window.project_name.view().minimumWidth() >= required_width
+    assert setup_card.rect().contains(combo_rect)
+    assert window.project_name.toolTip() == loaded_name
+
+    window.close()
+
+
+def test_project_stack_header_fits_thickness_label_without_horizontal_overflow(
+    app: QApplication,
+) -> None:
+    window = MainWindow()
+    window.resize(1280, 812)
+    window.show()
+    _process_events()
+
+    table = window.findChild(QTableWidget, "projectStackSummaryTable")
+    header = table.horizontalHeader()
+    thickness_column = 1
+    thickness_label = table.horizontalHeaderItem(thickness_column).text()
+    required_width = table.fontMetrics().horizontalAdvance(thickness_label) + 18
+
+    assert header.sectionSize(thickness_column) >= required_width
+    assert table.horizontalScrollBar().maximum() == 0
+    assert table.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+
+    window.close()
+
+
+def test_project_page_scroll_reaches_result_canvas_at_packaged_size(
+    app: QApplication,
+) -> None:
+    window = MainWindow()
+    window.resize(1280, 812)
+    window.show()
+    _process_events()
+
+    assert window.workspace.count() == 7
+    assert window._pages["Project"].objectName() == "projectPage"
+    scroll_area = window.workspace.widget(0)
+    assert isinstance(scroll_area, QScrollArea)
+    assert scroll_area.objectName() == "projectScrollArea"
+    assert scroll_area.widget() is window._pages["Project"]
+    assert scroll_area.widgetResizable() is True
+    assert (
+        scroll_area.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    )
+
+    dashboard = window.findChild(QWidget, "dashboardPlotPreview")
+    ancestor = dashboard.parentWidget()
+    while ancestor is not None and not isinstance(ancestor, QScrollArea):
+        ancestor = ancestor.parentWidget()
+    assert ancestor is scroll_area
+    assert (
+        scroll_area.verticalScrollBarPolicy() != Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    )
+
+    vertical_bar = scroll_area.verticalScrollBar()
+    if vertical_bar.maximum() > 0:
+        vertical_bar.setValue(vertical_bar.maximum())
+        _process_events()
+        assert vertical_bar.value() == vertical_bar.maximum()
+        content_bottom = scroll_area.widget().mapTo(
+            scroll_area.viewport(), scroll_area.widget().rect().bottomLeft()
+        )
+        assert scroll_area.viewport().rect().contains(content_bottom)
+
+    scroll_area.ensureWidgetVisible(dashboard)
+    _process_events()
+
+    viewport_rect = scroll_area.viewport().rect()
+    top_left = dashboard.mapTo(scroll_area.viewport(), dashboard.rect().topLeft())
+    dashboard_rect = dashboard.rect().translated(top_left)
+    assert viewport_rect.intersects(dashboard_rect)
 
     window.close()
 

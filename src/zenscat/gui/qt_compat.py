@@ -23,7 +23,7 @@ try:  # pragma: no cover - exercised when PySide6 is installed.
         QTimer,
         Signal,
     )
-    from PySide6.QtGui import QAction, QColor, QPainter, QPen
+    from PySide6.QtGui import QAction, QColor, QPainter, QPalette, QPen
     from PySide6.QtWidgets import (
         QAbstractSpinBox,
         QApplication,
@@ -37,10 +37,13 @@ try:  # pragma: no cover - exercised when PySide6 is installed.
         QHBoxLayout,
         QHeaderView,
         QLabel,
+        QListView,
         QListWidget,
         QListWidgetItem,
         QMainWindow,
         QPushButton,
+        QScrollArea,
+        QSizePolicy,
         QSpinBox,
         QStackedWidget,
         QTableWidget,
@@ -67,7 +70,7 @@ except ImportError:  # pragma: no cover - environment dependent.
     from PyQt6.QtCore import (
         pyqtSignal as Signal,
     )
-    from PyQt6.QtGui import QAction, QColor, QPainter, QPen
+    from PyQt6.QtGui import QAction, QColor, QPainter, QPalette, QPen
     from PyQt6.QtWidgets import (
         QAbstractSpinBox,
         QApplication,
@@ -81,10 +84,13 @@ except ImportError:  # pragma: no cover - environment dependent.
         QHBoxLayout,
         QHeaderView,
         QLabel,
+        QListView,
         QListWidget,
         QListWidgetItem,
         QMainWindow,
         QPushButton,
+        QScrollArea,
+        QSizePolicy,
         QSpinBox,
         QStackedWidget,
         QTableWidget,
@@ -113,14 +119,18 @@ __all__ = [
     "QHBoxLayout",
     "QHeaderView",
     "QLabel",
+    "QListView",
     "QListWidget",
     "QListWidgetItem",
     "QMainWindow",
     "QObject",
     "QPainter",
+    "QPalette",
     "QPen",
     "QPushButton",
     "QRectF",
+    "QScrollArea",
+    "QSizePolicy",
     "QSpinBox",
     "QStackedWidget",
     "QTabWidget",

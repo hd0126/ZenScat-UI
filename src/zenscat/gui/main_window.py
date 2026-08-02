@@ -25,14 +25,18 @@ from .qt_compat import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QListView,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
     QObject,
     QPainter,
+    QPalette,
     QPen,
     QPushButton,
     QRectF,
+    QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QStackedWidget,
     Qt,
@@ -198,6 +202,35 @@ QTabBar::tab {
 QTabBar::tab:selected {
     background: #ffffff;
     border-bottom-color: #ffffff;
+}
+"""
+
+COMBO_POPUP_STYLE = """
+QListView {
+    background-color: #fbfcfd;
+    color: #17212b;
+    border: 1px solid #aebfcb;
+    border-radius: 6px;
+    padding: 4px;
+    outline: 0;
+    show-decoration-selected: 1;
+    selection-background-color: #b9dce9;
+    selection-color: #17212b;
+}
+QListView::item {
+    min-height: 24px;
+    padding: 3px 8px;
+    border-radius: 4px;
+}
+QListView::item:hover {
+    background-color: #b9dce9;
+    color: #17212b;
+    font-weight: 600;
+}
+QListView::item:selected {
+    background-color: #b9dce9;
+    color: #17212b;
+    font-weight: 600;
 }
 """
 
@@ -872,6 +905,14 @@ class MainWindow(QMainWindow):
         self._refresh_context_inspector("Project")
         self.nav_list.setFocus(Qt.FocusReason.OtherFocusReason)
 
+    def showEvent(self, event) -> None:  # type: ignore[override]
+        super().showEvent(event)
+        self._refresh_combo_popup_widths()
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._refresh_combo_popup_widths()
+
     def _build_actions(self) -> None:
         self.validate_action = QAction("Validate", self)
         self.validate_action.setObjectName("validateAction")
@@ -925,7 +966,7 @@ class MainWindow(QMainWindow):
         for label in NAV_ITEMS:
             page = self._build_page(label)
             self._pages[label] = page
-            self.workspace.addWidget(page)
+            self.workspace.addWidget(self._scroll_page(label, page))
         body.addWidget(self.workspace, 1)
 
         body.addWidget(self._build_inspector())
@@ -1089,28 +1130,33 @@ class MainWindow(QMainWindow):
         row.setSpacing(14)
 
         setup_card = self._card("projectSetupCard")
-        form = QFormLayout()
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form = self._form_layout()
 
         self.backend_combo = QComboBox()
         self.backend_combo.setObjectName("backendCombo")
         self.backend_combo.addItems(("Local Python", "External solver"))
+        self._configure_combo(self.backend_combo)
         self.project_name = QComboBox()
         self.project_name.setObjectName("projectNameCombo")
         self.project_name.setEditable(True)
         self.project_name.addItem("Untitled RCWA Study")
+        self._configure_combo(self.project_name)
         self.source_combo = QComboBox()
         self.source_combo.setObjectName("sourceCombo")
         self.source_combo.addItems(("Analytic", "Import"))
+        self._configure_combo(self.source_combo)
         self.method_combo = QComboBox()
         self.method_combo.setObjectName("methodCombo")
         self.method_combo.addItems(("S", "T"))
+        self._configure_combo(self.method_combo)
         self.interface_combo = QComboBox()
         self.interface_combo.setObjectName("interfaceCombo")
         self.interface_combo.addItems(("sin", "DE1", "DE4", "tri"))
+        self._configure_combo(self.interface_combo)
         self.distribution_combo = QComboBox()
         self.distribution_combo.setObjectName("distributionCombo")
         self.distribution_combo.addItems(("all", "two"))
+        self._configure_combo(self.distribution_combo)
 
         form.addRow("Project", self.project_name)
         form.addRow("Source", self.source_combo)
@@ -1159,9 +1205,7 @@ class MainWindow(QMainWindow):
                 self.project_stack_table.setItem(
                     row_index, column_index, QTableWidgetItem(value)
                 )
-        self.project_stack_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch
-        )
+        self._fit_project_stack_table_header(self.project_stack_table)
         self.project_stack_table.verticalHeader().setVisible(False)
         self.project_stack_table.setMinimumHeight(126)
         workflow.layout().addWidget(self.project_stack_table)
@@ -1206,8 +1250,7 @@ class MainWindow(QMainWindow):
         row.setSpacing(14)
 
         control_card = self._card("deviceParameterCard")
-        form = QFormLayout()
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form = self._form_layout()
 
         self.period_um = self._double("periodUmInput", 0.001, 1000.0, 0.32, " um")
         self.height_um = self._double("heightUmInput", 0.001, 1000.0, 0.154, " um")
@@ -1290,8 +1333,7 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         row.setSpacing(14)
         control_card = self._card("rcwaControlCard")
-        form = QFormLayout()
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form = self._form_layout()
 
         self.wavelength_nm = self._double(
             "wavelengthNmInput", 1.0, 100000.0, 510.0, " nm"
@@ -1316,6 +1358,7 @@ class MainWindow(QMainWindow):
         self.mode_combo = QComboBox()
         self.mode_combo.setObjectName("modeCombo")
         self.mode_combo.addItems(("E", "H"))
+        self._configure_combo(self.mode_combo)
 
         form.addRow("Polarization", self.mode_combo)
         form.addRow("Center wavelength", self.wavelength_nm)
@@ -1345,16 +1388,17 @@ class MainWindow(QMainWindow):
         summary_card.layout().addWidget(
             self._badge("Validate, then Run selected workflow", "rcwaSolveBadge")
         )
-        phc_form = QFormLayout()
-        phc_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        phc_form = self._form_layout()
         self.phc_shape_combo = QComboBox()
         self.phc_shape_combo.setObjectName("phcShapeCombo")
         self.phc_shape_combo.addItems(
             ("1D Analytic/Import", "PhC Rectangle", "PhC Ellipse", "PhC Hex")
         )
+        self._configure_combo(self.phc_shape_combo)
         self.phc_repeat_combo = QComboBox()
         self.phc_repeat_combo.setObjectName("phcRepeatCombo")
         self.phc_repeat_combo.addItems(("legacy repeat", "corrected repeat"))
+        self._configure_combo(self.phc_repeat_combo)
         self.phc_layer_count = self._integer("phcLayerCountInput", 1, 8, 1)
         self.phc_pitch_um = self._double("phcPitchUmInput", 0.01, 10.0, 0.32, " um")
         self.phc_background_n = self._double("phcBackgroundInput", 0.01, 10.0, 1.5, "")
@@ -1396,8 +1440,7 @@ class MainWindow(QMainWindow):
         row.setSpacing(14)
 
         controls = self._card("optimizePanel")
-        form = QFormLayout()
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form = self._form_layout()
         self.optimization_objective = QComboBox()
         self.optimization_objective.setObjectName("optimizationObjectiveCombo")
         self.optimization_objective.addItems(
@@ -1413,6 +1456,7 @@ class MainWindow(QMainWindow):
             )
         )
         self.optimization_objective.setCurrentText("R(+1)")
+        self._configure_combo(self.optimization_objective)
         self.optimization_generations = self._integer(
             "optimizationGenerationsInput", 1, 1000, 100
         )
@@ -1468,19 +1512,21 @@ class MainWindow(QMainWindow):
         row.setSpacing(14)
 
         controls = self._card("fdfdPanel")
-        form = QFormLayout()
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form = self._form_layout()
         self.fdfd_interface_combo = QComboBox()
         self.fdfd_interface_combo.setObjectName("fdfdInterfaceCombo")
         self.fdfd_interface_combo.addItems(("sin", "DE1", "DE4", "tri"))
+        self._configure_combo(self.fdfd_interface_combo)
         self.fdfd_palette_combo = QComboBox()
         self.fdfd_palette_combo.setObjectName("fdfdPaletteCombo")
         self.fdfd_palette_combo.addItems(
             ("manual legacy", "material legacy", "material corrected")
         )
+        self._configure_combo(self.fdfd_palette_combo)
         self.fdfd_field_combo = QComboBox()
         self.fdfd_field_combo.setObjectName("fdfdFieldCombo")
         self.fdfd_field_combo.addItems(("abs(f)", "real(f)", "ER2"))
+        self._configure_combo(self.fdfd_field_combo)
         self.fdfd_nres = self._double("fdfdNresInput", 1.0, 200.0, 20.0, "")
         self.fdfd_period_num = self._integer("fdfdPeriodNumInput", 1, 101, 11)
         self.fdfd_npml_x = self._integer("fdfdNpmlXInput", 0, 200, 20)
@@ -1535,9 +1581,11 @@ class MainWindow(QMainWindow):
         self.result_family_combo = QComboBox()
         self.result_family_combo.setObjectName("resultFamilyCombo")
         self.result_family_combo.addItems(("Transmission", "Reflection", "Energy"))
+        self._configure_combo(self.result_family_combo)
         self.result_order_combo = QComboBox()
         self.result_order_combo.setObjectName("resultOrderCombo")
         self.result_order_combo.addItems(("-1", "0", "+1", "sum"))
+        self._configure_combo(self.result_order_combo)
         selector_row.addWidget(self.result_family_combo)
         selector_row.addWidget(self.result_order_combo)
         results_card.layout().addLayout(selector_row)
@@ -1577,6 +1625,98 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(22, 18, 22, 18)
         layout.setSpacing(14)
         return page
+
+    def _fit_project_stack_table_header(self, table: QTableWidget) -> None:
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        header = table.horizontalHeader()
+        for column in range(3):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        header.setStretchLastSection(True)
+        padding = 26
+        for column in range(3):
+            item = table.horizontalHeaderItem(column)
+            label = "" if item is None else item.text()
+            header.resizeSection(
+                column, table.fontMetrics().horizontalAdvance(label) + padding
+            )
+
+    def _scroll_page(self, label: str, page: QWidget) -> QScrollArea:
+        scroll_area = QScrollArea()
+        object_token = "".join(part.lower().capitalize() for part in label.split())
+        scroll_area.setObjectName(
+            f"{object_token[0].lower()}{object_token[1:]}ScrollArea"
+        )
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_area.setWidget(page)
+        return scroll_area
+
+    def _form_layout(self) -> QFormLayout:
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        return form
+
+    def _configure_combo(self, combo: QComboBox) -> None:
+        popup_view = QListView(combo)
+        popup_view.setObjectName(f"{combo.objectName()}PopupView")
+        popup_view.setMouseTracking(True)
+        popup_view.viewport().setMouseTracking(True)
+        popup_view.setUniformItemSizes(True)
+        popup_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        popup_view.setStyleSheet(COMBO_POPUP_STYLE)
+        popup_palette = popup_view.palette()
+        popup_palette.setColor(QPalette.ColorRole.Base, QColor("#fbfcfd"))
+        popup_palette.setColor(QPalette.ColorRole.Text, QColor("#17212b"))
+        popup_palette.setColor(QPalette.ColorRole.Highlight, QColor("#b9dce9"))
+        popup_palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#17212b"))
+        popup_view.setPalette(popup_palette)
+        popup_view.entered.connect(popup_view.setCurrentIndex)
+        combo.setView(popup_view)
+        combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        combo.setMinimumContentsLength(
+            max(
+                (len(combo.itemText(index)) for index in range(combo.count())),
+                default=8,
+            )
+        )
+        combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        width = self._combo_text_width(combo)
+        popup_width = max(
+            self._combo_popup_text_width(combo), combo.view().sizeHintForColumn(0)
+        )
+        combo.setMinimumWidth(width)
+        combo.view().setMinimumWidth(popup_width)
+        if combo.isEditable():
+            combo.setToolTip(combo.currentText())
+            combo.editTextChanged.connect(combo.setToolTip)
+
+    def _refresh_combo_popup_widths(self) -> None:
+        for combo in self.findChildren(QComboBox):
+            width = self._combo_text_width(combo)
+            popup_width = max(
+                self._combo_popup_text_width(combo), combo.view().sizeHintForColumn(0)
+            )
+            combo.setMinimumWidth(width)
+            combo.view().setMinimumWidth(popup_width)
+
+    def _combo_text_width(self, combo: QComboBox) -> int:
+        longest = max(
+            (combo.itemText(index) for index in range(combo.count())),
+            key=len,
+            default=combo.currentText(),
+        )
+        return max(132, combo.fontMetrics().horizontalAdvance(longest) + 56)
+
+    def _combo_popup_text_width(self, combo: QComboBox) -> int:
+        return max(
+            self._combo_text_width(combo),
+            combo.fontMetrics().horizontalAdvance(combo.currentText()) + 56,
+        )
 
     def _build_inspector(self) -> QWidget:
         tabs = QTabWidget()
@@ -1932,6 +2072,7 @@ class MainWindow(QMainWindow):
         self._apply_configuration(document.configuration or {})
         self._select_project_workflow(document.workflow)
         self.project_name.setCurrentText(document.name)
+        self._refresh_combo_popup_widths()
         self._validated = False
         self._last_run = None
         self._last_inputs = None
