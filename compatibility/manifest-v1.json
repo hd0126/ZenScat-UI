@@ -1,0 +1,325 @@
+{
+  "schema": "zenscat.compatibility-manifest",
+  "schema_version": "1.0",
+  "legacy_source_commit": "b2867d1",
+  "production_runtime": "Python; MATLAB is oracle-only",
+  "matlab_oracle": {
+    "release": "R2024b",
+    "fixture_directory": "tests/golden",
+    "generators": [
+      "matlab_oracle/generate_golden_fixtures.m",
+      "matlab_oracle/generate_device_variant_goldens.m",
+      "matlab_oracle/generate_optimization_golden.m",
+      "matlab_oracle/generate_fdfd_golden.m",
+      "matlab_oracle/generate_phc_golden.m"
+    ]
+  },
+  "length_units": {
+    "analytic_geometry": "um",
+    "rcwa_solver_wavelength": "m",
+    "imported_sub_L": "um",
+    "rcwa_solver_sub_L": "m",
+    "fdfd_geometry": "um",
+    "fdfd_wavelength": "um",
+    "angles": "rad"
+  },
+  "public_result_fields": {
+    "rcwa": {
+      "TRN": ["minus_1", "plus_1", "TRN0", "sum"],
+      "REF": ["minus_1", "plus_1", "REF0", "sum"]
+    },
+    "fdfd": {
+      "TRN": ["TRN_minus1", "TRN_plus1", "TRN0", "sum"],
+      "REF": ["TRN_minus1", "REF_plus1", "REF0", "sum"],
+      "raw_field": "f",
+      "device_field": "ER2"
+    }
+  },
+  "export_schemas": [
+    {
+      "schema": "zenscat.result-bundle",
+      "workflows": ["casual_rcwa", "custom_import_rcwa", "casual_phc_rcwa", "optimization"],
+      "files": ["TRN.mat", "REF.mat", "Lam.mat", "Theta.mat", "manifest.json"],
+      "optional_files": ["Output.mat", "Params.mat"],
+      "units": {"wavelength": "m", "angle": "rad"}
+    },
+    {
+      "schema": "zenscat.fdfd-result-bundle",
+      "workflows": ["fdfd_fields"],
+      "files": ["TRN.mat", "REF.mat", "Lam.mat", "Theta.mat", "Field.mat", "ER2.mat", "manifest.json"],
+      "optional_files": ["Params.mat"],
+      "units": {"wavelength": "um", "angle": "rad", "field": "raw_solver_units"}
+    }
+  ],
+  "workflows": [
+    {
+      "id": "casual_rcwa",
+      "legacy_entry": "ZENSCAT_MAIN/app2_CasualClass.m",
+      "status": "supported",
+      "gui_support": "implemented",
+      "inputs": ["Params", "interface", "distribution", "Lx", "h", "Nx", "Nz", "NH", "Lam0", "Theta", "n_sup", "n_sub", "polarization", "matrix_method"],
+      "outputs": ["device.ER", "device.ERC", "device.sub_L", "grid", "TRN", "REF"],
+      "supported": [
+        "S matrix",
+        "T matrix",
+        "E mode",
+        "H mode",
+        "sin interface",
+        "DE1 trapezium interface",
+        "DE4 super-Gaussian interface",
+        "tri triangle interface",
+        "all/two layer distribution",
+        "periodic replication",
+        "legacy MATLAB indexing and rounding"
+      ]
+    },
+    {
+      "id": "custom_import_rcwa",
+      "legacy_entry": "ZENSCAT_MAIN/app5_Casual_ImportClass.m",
+      "status": "supported",
+      "gui_support": "implemented",
+      "inputs": ["ER", "sub_L", "x", "Lx", "NH", "Lam0", "Theta", "n_sup", "n_sub", "polarization", "matrix_method"],
+      "outputs": ["device.ER", "device.ERC", "device.sub_L", "grid", "TRN", "REF"],
+      "supported": [
+        "legacy RCWA_DATA.mat files",
+        "trusted RCWA_DATA.py.npy dictionaries",
+        "S/T matrix execution",
+        "E/H polarization",
+        "MATLAB-compatible result bundle export"
+      ],
+      "security_policy": "NumPy pickle dictionaries require trusted_pickle=True or an explicit GUI import action."
+    },
+    {
+      "id": "casual_phc_rcwa",
+      "legacy_entry": "ZENSCAT_MAIN/app2_CasualClass.m; ZENSCAT_MAIN/Device_3.m; ZENSCAT_MAIN/Launch_RCWA_S_PhC.m",
+      "status": "supported",
+      "gui_support": "implemented",
+      "inputs": ["Params", "PhC interface", "PhC interface params", "layer_count", "NH", "Lam0", "Theta", "n_sup", "n_sub", "polarization", "repeat_mode"],
+      "outputs": ["device.ER", "device.ERC", "device.sub_L", "top/bottom cap layers", "TRN", "REF"],
+      "supported": [
+        "PhC_rec_square rectangle",
+        "PhC_rec_circ ellipse/circle",
+        "PhC_hex_columns hex columns",
+        "E mode",
+        "H mode",
+        "legacy S-matrix PhC path",
+        "legacy repeat bug mode",
+        "corrected repeat mode"
+      ],
+      "notes": [
+        "The live legacy rectangle GUI zero-width wiring is repaired by requiring positive rectangle widths.",
+        "Angles are passed in radians in the Python workflow metadata."
+      ]
+    },
+    {
+      "id": "optimization",
+      "legacy_entry": "ZENSCAT_MAIN/app3_OptimizeClass.m; ZENSCAT_MAIN/Merit_Function3.m; ZENSCAT_MAIN/Merit_Function_Import.m",
+      "status": "supported",
+      "gui_support": "implemented",
+      "inputs": ["bounds", "objective", "polarization", "NH", "sweep", "analytic or imported device"],
+      "outputs": ["best parameters", "fitness", "termination status", "history", "final physical RCWA run", "export bundle"],
+      "supported": [
+        "R(-1)",
+        "R(0)",
+        "R(+1)",
+        "T(-1)",
+        "T(0)",
+        "T(+1)",
+        "Absorption",
+        "Gain",
+        "deterministic scipy.differential_evolution",
+        "cancellation",
+        "final physical S-matrix RCWA verification/export"
+      ],
+      "not_claimed": [
+        "MATLAB proprietary GA trajectory compatibility",
+        "legacy +/-2 dropdown objectives because the MATLAB merit functions never implemented them"
+      ]
+    },
+    {
+      "id": "fdfd_fields",
+      "legacy_entry": "ZENSCAT_MAIN/app4_CalcFieldsClass.m; ZENSCAT_MAIN/Grid_FDFD.m; ZENSCAT_MAIN/Device_FDFD.m; ZENSCAT_MAIN/FDFD_2D.m",
+      "status": "supported",
+      "gui_support": "implemented",
+      "inputs": ["Params_FDFD", "interface", "polarization", "Lam0_um", "Theta", "grid resolution", "PML", "material palette"],
+      "outputs": ["TRN", "REF", "f", "ER2", "Python FDFD export bundle"],
+      "supported": [
+        "sin interface",
+        "DE1 trapezium interface",
+        "DE4 super-Gaussian interface",
+        "tri triangle interface",
+        "all/two distribution",
+        "periodic replication",
+        "E mode",
+        "H mode",
+        "raw field f",
+        "ER2 device field",
+        "material palette dispersion legacy_fdfd mode",
+        "material palette dispersion corrected_um mode"
+      ],
+      "not_claimed": [
+        "Device_FDFD_PhC.m branch",
+        "MATLAB-defined FDFD file export schema; Python defines zenscat.fdfd-result-bundle"
+      ]
+    }
+  ],
+  "oracle_fixture_families": [
+    {
+      "id": "casual_rcwa_s_t_e_h",
+      "workflow": "casual_rcwa",
+      "oracle": "MATLAB R2024b Update 7",
+      "fixture": "tests/golden/zenscat_matlab_golden.mat",
+      "generator": "matlab_oracle/generate_golden_fixtures.m",
+      "python_tests": [
+        "tests/test_golden_contract.py",
+        "tests/test_matlab_rcwa_parity.py",
+        "tests/test_matlab_tmatrix_parity.py",
+        "tests/test_workflows.py"
+      ],
+      "fixtures": [
+        "casual_default_s_e_41x21",
+        "small_s_e_3x3",
+        "small_s_h_3x3",
+        "small_t_e_3x3",
+        "small_t_h_3x3"
+      ],
+      "tolerance": {"rtol": 2e-10, "atol": 2e-12},
+      "units": {"wavelength": "m", "geometry": "um", "sub_L": "m"}
+    },
+    {
+      "id": "analytic_device_variants",
+      "workflow": "casual_rcwa",
+      "oracle": "MATLAB R2024b Update 7",
+      "fixture": "tests/golden/zenscat_device_variant_goldens.mat",
+      "generator": "matlab_oracle/generate_device_variant_goldens.m",
+      "python_tests": ["tests/test_matlab_device_parity.py"],
+      "fixtures": [
+        "de1_all_ui",
+        "de1_two_periodic_ui",
+        "de4_all_ui_smooth",
+        "de4_two_periodic_ui_smooth",
+        "tri_all_ui",
+        "tri_two_periodic_ui"
+      ],
+      "tolerance": {"rtol": 0.0, "atol": 1e-14},
+      "units": {"geometry": "um", "sub_L": "m"}
+    },
+    {
+      "id": "optimization_objective_parity",
+      "workflow": "optimization",
+      "oracle": "MATLAB R2024b Update 7",
+      "fixture": "tests/golden/zenscat_matlab_optimization_golden.mat",
+      "generator": "matlab_oracle/generate_optimization_golden.m",
+      "python_tests": [
+        "tests/test_matlab_optimization_parity.py",
+        "tests/test_optimization.py"
+      ],
+      "fixtures": [
+        "analytic_e_t0",
+        "analytic_h_absorption",
+        "import_e_gain",
+        "import_h_r0"
+      ],
+      "tolerance": {"rtol": 0.0, "atol": 2e-12},
+      "units": {"analytic_wavelength": "m", "imported_sub_L_input": "um", "solver_sub_L": "m"}
+    },
+    {
+      "id": "fdfd_mainline_fields",
+      "workflow": "fdfd_fields",
+      "oracle": "MATLAB R2024b Update 7",
+      "fixture": "tests/golden/zenscat_matlab_fdfd_golden.mat",
+      "generator": "matlab_oracle/generate_fdfd_golden.m",
+      "python_tests": [
+        "tests/test_matlab_fdfd_parity.py",
+        "tests/test_workflows.py",
+        "tests/test_legacy_io.py"
+      ],
+      "fixtures": [
+        "fdfd_small_sin_e_2x2",
+        "fdfd_small_sin_h_2x2",
+        "fdfd_small_de1_e_2x2",
+        "fdfd_small_de4_e_2x2",
+        "fdfd_small_tri_e_2x2",
+        "fdfd_small_sin_two_periodic_e_2x2",
+        "fdfd_small_sin_material_palette_e_2x2"
+      ],
+      "tolerance": {"rtol": 2e-10, "atol": 2e-10},
+      "units": {"wavelength": "um", "geometry": "um", "field": "raw_solver_units"}
+    },
+    {
+      "id": "casual_phc_rcwa",
+      "workflow": "casual_phc_rcwa",
+      "oracle": "MATLAB R2024b Update 7",
+      "fixture": "tests/golden/zenscat_matlab_phc_golden.mat",
+      "generator": "matlab_oracle/generate_phc_golden.m",
+      "python_tests": ["tests/test_matlab_phc_parity.py", "tests/test_gui_smoke.py"],
+      "fixtures": [
+        "rectangle_e_layer3_legacy_bug",
+        "ellipse_h_layer2",
+        "hex_e_layer3_legacy_bug",
+        "hex_h_layer2"
+      ],
+      "tolerance": {"rtol": 0.0, "atol": 3e-12},
+      "units": {"wavelength": "m", "geometry": "um", "sub_L": "m"}
+    }
+  ],
+  "legacy_quirks": [
+    {
+      "id": "fdfd-final-sweep-sum",
+      "status": "verified",
+      "policy": "Preserve the legacy scalar sum from the final wavelength/angle sweep point and identify it as legacy_final_sweep_sum metadata."
+    },
+    {
+      "id": "fdfd-ref-trn-minus1-alias",
+      "status": "verified",
+      "policy": "Preserve the legacy REF.TRN_minus1 alias in FDFD compatibility fields and metadata rather than silently renaming it."
+    },
+    {
+      "id": "fdfd-dispersion-unit-behavior",
+      "status": "verified",
+      "policy": "Default to legacy_fdfd material-palette evaluation, which follows MATLAB's 1e6*Lam0 behavior; expose corrected_um explicitly for micrometre-corrected evaluation."
+    },
+    {
+      "id": "phc-non-power-of-two-repeat",
+      "status": "verified",
+      "policy": "Expose repeat_mode='legacy' to reproduce Launch_RCWA_S_PhC.m and repeat_mode='corrected' for exact layer repetition."
+    },
+    {
+      "id": "phc-rectangle-zero-width-live-wiring",
+      "status": "verified",
+      "policy": "Reject zero rectangle widths and use repaired positive-width GUI controls; the broken legacy live wiring is not reproduced."
+    },
+    {
+      "id": "broken-device-fdfd-phc-branch",
+      "status": "verified-in-source",
+      "policy": "Exclude Device_FDFD_PhC.m because it references undefined identifiers and lacks a stable public result contract."
+    },
+    {
+      "id": "optimizer-plus-minus-two-dropdown-options",
+      "status": "verified-in-source",
+      "policy": "Do not expose +/-2 objective choices as supported because Merit_Function3.m and Merit_Function_Import.m do not implement them."
+    },
+    {
+      "id": "matlab-ga-trajectory",
+      "status": "not-claimed",
+      "policy": "Match objective semantics and final physical S-run outputs; do not claim deterministic equality with MATLAB's proprietary GA trajectory."
+    },
+    {
+      "id": "tm-normalization-differs-between-s-and-t",
+      "status": "verified",
+      "policy": "Preserve each legacy method's formula and test S and T independently."
+    },
+    {
+      "id": "matlab-rounding-indexing-orientation",
+      "status": "verified",
+      "policy": "Preserve MATLAB rounding, indexing, and single-axis MAT orientation in geometry, solver, and result round-trip tests."
+    }
+  ],
+  "release_claims": {
+    "apple_silicon": "supported by source and build scripts",
+    "matlab_required_at_runtime": false,
+    "matlab_coder_required": false,
+    "windows_mex_required": false,
+    "notarization": "not claimed"
+  }
+}

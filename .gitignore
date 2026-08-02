@@ -1,0 +1,22 @@
+.DS_Store
+
+# Python development artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+build/
+dist/
+*.egg-info/
+
+# MATLAB/ZenScat run outputs (golden fixtures live under tests/golden)
+ZENSCAT_MAIN/*Polarization_*/
+ZENSCAT_MAIN/RefrIdx*/
+ZENSCAT_MAIN/*.png
+ZENSCAT_MAIN/*.fig
+
+# Local packaging output
+*.app/
+*.dmg

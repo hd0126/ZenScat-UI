@@ -1,0 +1,698 @@
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any, ClassVar
+
+import numpy as np
+import pytest
+
+os.environ.setdefault(
+    "QT_QPA_PLATFORM", "minimal" if sys.platform == "darwin" else "offscreen"
+)
+os.environ.setdefault("ZENSCAT_QT_BINDING", "PySide6")
+
+from zenscat.core import DiffractionResult
+from zenscat.gui import MainWindow
+from zenscat.gui.main_window import ValidationResult
+from zenscat.gui.qt_compat import (
+    QT_BINDING,
+    QApplication,
+    QComboBox,
+    QCoreApplication,
+    QDoubleSpinBox,
+    QLabel,
+    QPushButton,
+    QSpinBox,
+    Qt,
+    QTableWidget,
+    QWidget,
+)
+from zenscat.legacy_io import LegacyResultBundle
+from zenscat.project import ProjectDocument
+
+
+@pytest.fixture()
+def app() -> QApplication:
+    app = QApplication.instance() or QApplication([])
+    yield app
+
+
+def _process_events() -> None:
+    for _ in range(3):
+        QCoreApplication.processEvents()
+
+
+def _wait_until(predicate, timeout_s: float = 10.0) -> None:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        QCoreApplication.processEvents()
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError("condition was not met before timeout")
+
+
+def _set_small_run(window: MainWindow) -> None:
+    window.sweep_points.setValue(1)
+    window.nx_input.setValue(32)
+    window.nz_input.setValue(2)
+    window.harmonics.setValue(1)
+    window.wavelength_start_nm.setValue(510.0)
+    window.wavelength_stop_nm.setValue(510.0)
+    window.angle_start_deg.setValue(0.0)
+    window.angle_stop_deg.setValue(0.0)
+
+
+def _set_tiny_optimization(window: MainWindow) -> None:
+    window.optimization_generations.setValue(1)
+    window.optimization_population.setValue(1)
+    values = (
+        ("period_um", "0.31", "0.33"),
+        ("height_um", "0.14", "0.16"),
+        ("first_thickness_um", "0.16", "0.20"),
+    )
+    for row, row_values in enumerate(values):
+        for column, value in enumerate(row_values):
+            window.optimization_bounds_table.item(row, column).setText(value)
+
+
+def _set_tiny_fdfd(window: MainWindow) -> None:
+    window.fdfd_nres.setValue(2.0)
+    window.fdfd_period_num.setValue(3)
+    window.fdfd_npml_x.setValue(1)
+    window.fdfd_npml_y.setValue(1)
+    window.fdfd_spacer_top.setValue(0.1)
+    window.fdfd_spacer_bottom.setValue(0.1)
+
+
+def _nav_label(window: MainWindow) -> str:
+    return str(window.nav_list.currentItem().data(Qt.ItemDataRole.UserRole))
+
+
+def _select_nav(window: MainWindow, label: str) -> None:
+    for index in range(window.nav_list.count()):
+        if window.nav_list.item(index).data(Qt.ItemDataRole.UserRole) == label:
+            window.nav_list.setCurrentRow(index)
+            return
+    raise AssertionError(f"missing nav page: {label}")
+
+
+def _empty_legacy_bundle() -> LegacyResultBundle:
+    values = np.zeros((1, 1), dtype=np.float64)
+    return LegacyResultBundle(
+        wavelengths_m=np.array([500e-9]),
+        angles_rad=np.array([0.0]),
+        transmission=DiffractionResult(values, values, TRN0=values, sum=values),
+        reflection=DiffractionResult(values, values, REF0=values, sum=values),
+    )
+
+
+class _LegacyExportRun:
+    metadata: ClassVar[dict[str, str]] = {"workflow": "casual_rcwa"}
+
+    def __init__(self, bundle: LegacyResultBundle | object | None = None) -> None:
+        self._bundle = bundle or _empty_legacy_bundle()
+
+    def legacy_bundle(self, params: object | None = None) -> LegacyResultBundle | object:
+        return self._bundle
+
+
+def test_qt_compat_prefers_supported_binding(app: QApplication) -> None:
+    assert QT_BINDING in {"PySide6", "PyQt6"}
+    assert QApplication.instance() is app
+
+
+def test_main_window_exposes_precision_lab_shell(app: QApplication) -> None:
+    window = MainWindow()
+    window.show()
+    _process_events()
+
+    assert window.objectName() == "zenscatMainWindow"
+    assert window.nav_list.count() == 7
+    assert [
+        window.nav_list.item(index).data(Qt.ItemDataRole.UserRole)
+        for index in range(window.nav_list.count())
+    ] == [
+        "Project",
+        "Device",
+        "RCWA Sweep",
+        "Optimize",
+        "FDFD Fields",
+        "Results",
+        "Jobs",
+    ]
+    assert window.workspace.count() == 7
+    assert window.findChild(QPushButton, "validateButton") is not None
+    assert window.findChild(QPushButton, "runButton").isEnabled() is False
+    assert window.findChild(QPushButton, "cancelButton").isEnabled() is False
+    assert window.findChild(QPushButton, "exportButton").isEnabled() is False
+    assert window.findChild(QPushButton, "openProjectButton") is not None
+    assert window.findChild(QPushButton, "saveProjectButton") is not None
+    assert window.findChild(QPushButton, "loadImportButton") is not None
+
+    window.close()
+
+
+def test_shell_contains_editable_legacy_stack_and_scientific_controls(
+    app: QApplication,
+) -> None:
+    window = MainWindow()
+    window.show()
+    _process_events()
+
+    layer_table = window.findChild(QTableWidget, "layerTable")
+    assert layer_table.rowCount() == 2
+    assert [layer_table.item(0, 1).text(), layer_table.item(1, 1).text()] == [
+        "0.182",
+        "0.120",
+    ]
+    assert [layer_table.item(0, 2).text(), layer_table.item(1, 2).text()] == [
+        "1.781",
+        "1.650",
+    ]
+    assert window.findChild(QTableWidget, "projectStackSummaryTable").rowCount() == 2
+    assert window.findChild(QComboBox, "methodCombo").currentText() == "S"
+    assert window.findChild(QComboBox, "interfaceCombo").currentText() == "sin"
+    assert window.findChild(QComboBox, "sourceCombo").currentText() == "Analytic"
+    assert window.findChild(QComboBox, "modeCombo").currentText() == "E"
+    assert window.findChild(QSpinBox, "nxInput").value() == 128
+    assert window.findChild(QSpinBox, "nzInput").value() == 5
+    assert "Fourier orders" in window.findChild(QLabel, "gridSummaryLabel").text()
+    assert window.findChild(QLabel, "metricDeviceValue").text() == "2 layers"
+    assert "302 nm total" in window.findChild(QLabel, "metricDeviceDetail").text()
+    assert window.findChild(QLabel, "metricSweepValue").text() == "500-520 nm"
+    assert "0-5 deg, 3 pts, S/E" in window.findChild(QLabel, "metricSweepDetail").text()
+    science_summary = window.findChild(QLabel, "projectScienceSummaryLabel").text()
+    assert "period 0.32 um" in science_summary
+    assert "height 0.154 um" in science_summary
+    assert "substrate n 1.516" in science_summary
+    assert "harmonics 2" in science_summary
+    assert "Nx 128, Nz 5" in science_summary
+    assert (
+        "sin profile"
+        in window.findChild(QWidget, "projectDevicePreview").accessibleName()
+    )
+    assert "configured" in window.nav_list.item(2).text()
+    assert window.optimization_objective.currentText() == "R(+1)"
+    assert window.optimization_generations.value() == 100
+    assert window.optimization_population.value() == 15
+    assert window.optimization_bounds_table.rowCount() == 3
+    assert [
+        window.optimization_bounds_table.item(row, 1).text() for row in range(3)
+    ] == ["0.6", "0.01", "0.2"]
+    assert [
+        window.optimization_bounds_table.item(row, 2).text() for row in range(3)
+    ] == ["5", "0.5", "1"]
+    assert window.findChild(QDoubleSpinBox, "fdfdNresInput").value() == 20.0
+    assert window.findChild(QSpinBox, "fdfdPeriodNumInput").value() == 11
+    assert window.findChild(QSpinBox, "fdfdNpmlXInput").value() == 20
+    assert window.findChild(QSpinBox, "fdfdNpmlYInput").value() == 20
+    assert "Export unlocks after a completed run" in window.results_text.toPlainText()
+
+    window.add_layer_button.click()
+    _process_events()
+    assert layer_table.rowCount() == 3
+    window.remove_layer_button.click()
+    _process_events()
+    assert layer_table.rowCount() == 2
+
+    window.close()
+
+
+def test_project_round_trip_preserves_gui_state(
+    app: QApplication, tmp_path: Path
+) -> None:
+    window = MainWindow()
+    window.show()
+    window.project_name.setCurrentText("Round Trip Study")
+    window.period_um.setValue(0.42)
+    window.height_um.setValue(0.08)
+    window.harmonics.setValue(3)
+    window.nx_input.setValue(64)
+    window.nz_input.setValue(4)
+    window.layer_table.item(0, 1).setText("0.200")
+    window.layer_table.item(1, 2).setText("1.700")
+    _process_events()
+
+    project_path = window.save_project_to(tmp_path / "roundtrip")
+    assert project_path.suffix == ".zenscat"
+
+    restored = MainWindow()
+    restored.open_project_from(project_path)
+    _process_events()
+
+    assert restored.project_name.currentText() == "Round Trip Study"
+    assert restored.period_um.value() == pytest.approx(0.42)
+    assert restored.height_um.value() == pytest.approx(0.08)
+    assert restored.harmonics.value() == 3
+    assert restored.nx_input.value() == 64
+    assert restored.nz_input.value() == 4
+    assert restored.layer_table.item(0, 1).text() == "0.2"
+    assert restored.layer_table.item(1, 2).text() == "1.7"
+
+    restored.close()
+    window.close()
+
+
+@pytest.mark.parametrize(
+    ("workflow", "nav_page"),
+    [
+        ("casual_rcwa", "RCWA Sweep"),
+        ("custom_import_rcwa", "RCWA Sweep"),
+        ("optimization", "Optimize"),
+        ("fdfd_fields", "FDFD Fields"),
+        ("casual_phc_rcwa", "RCWA Sweep"),
+    ],
+)
+def test_project_round_trip_preserves_active_workflow(
+    app: QApplication, tmp_path: Path, workflow: str, nav_page: str
+) -> None:
+    window = MainWindow()
+    window.show()
+    window.project_name.setCurrentText(f"{workflow} Study")
+    if workflow == "custom_import_rcwa":
+        window.source_combo.setCurrentText("Import")
+        window._import_path = tmp_path / "device.py.npy"
+    elif workflow == "optimization":
+        _select_nav(window, "Optimize")
+    elif workflow == "fdfd_fields":
+        _select_nav(window, "FDFD Fields")
+    elif workflow == "casual_phc_rcwa":
+        _select_nav(window, "RCWA Sweep")
+        window.phc_shape_combo.setCurrentText("PhC Rectangle")
+    else:
+        _select_nav(window, "RCWA Sweep")
+    _process_events()
+
+    project_path = window.save_project_to(tmp_path / workflow)
+    document = ProjectDocument.load(project_path)
+
+    restored = MainWindow()
+    restored.open_project_from(project_path)
+    _process_events()
+
+    assert document.workflow == workflow
+    assert _nav_label(restored) == nav_page
+    if workflow == "custom_import_rcwa":
+        assert restored.source_combo.currentText() == "Import"
+        assert restored._imported_device is None
+        assert restored._import_path == tmp_path / "device.py.npy"
+    if workflow == "casual_phc_rcwa":
+        assert restored.phc_shape_combo.currentText() == "PhC Rectangle"
+
+    restored.close()
+    window.close()
+
+
+def test_project_open_preserves_import_path_without_pickle_trust(
+    app: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    device_path = tmp_path / "device.py.npy"
+    device_path.write_bytes(b"pickle-backed placeholder")
+    project_path = ProjectDocument(
+        name="Pickle Import",
+        workflow="custom_import_rcwa",
+        configuration={
+            "source_mode": "Import",
+            "import_path": str(device_path),
+        },
+    ).save(tmp_path / "pickle-import")
+    calls: list[dict[str, Any]] = []
+
+    def fail_if_called(path: str | Path, **kwargs: Any) -> object:
+        calls.append({"path": path, **kwargs})
+        raise AssertionError("project open must not load imported devices")
+
+    monkeypatch.setattr("zenscat.legacy_io.load_imported_device", fail_if_called)
+
+    window = MainWindow()
+    window.open_project_from(project_path)
+    _process_events()
+
+    assert calls == []
+    assert window.source_combo.currentText() == "Import"
+    assert window._import_path == device_path
+    assert window._imported_device is None
+    assert _nav_label(window) == "RCWA Sweep"
+
+    window.close()
+
+
+def test_result_canvases_start_as_honest_empty_states(app: QApplication) -> None:
+    window = MainWindow()
+    window.show()
+    _process_events()
+
+    for object_name in (
+        "dashboardPlotPreview",
+        "sweepPlotPreview",
+        "optimizePlotPreview",
+        "fieldPlotPreview",
+        "resultsPlotPreview",
+    ):
+        assert (
+            "No computed results"
+            in window.findChild(QWidget, object_name).accessibleName()
+        )
+
+    assert "No computed results" in window.results_text.toPlainText()
+
+    window.close()
+
+
+def test_imported_numpy_device_dispatches_import_workflow_and_exports(
+    app: QApplication, tmp_path: Path
+) -> None:
+    x_um = np.linspace(-0.16, 0.16, 32)
+    device_path = tmp_path / "device.npy"
+    np.save(
+        device_path,
+        {
+            "ER": np.vstack(
+                [
+                    np.full(x_um.shape, 1.8**2),
+                    np.full(x_um.shape, 1.5**2),
+                ]
+            ),
+            "sub_L": np.asarray([0.08, 0.04]),
+            "x": x_um,
+            "Lx": 0.32,
+        },
+    )
+
+    window = MainWindow()
+    window.show()
+    _set_small_run(window)
+    window.load_import_device_from(device_path)
+    _process_events()
+
+    assert window.source_combo.currentText() == "Import"
+    assert "device.npy" in window.import_source_label.text()
+    assert "imported device" in window.structure_plot.accessibleName()
+
+    window.validate_button.click()
+    _process_events()
+    assert window.run_button.isEnabled() is True
+
+    window.run_button.click()
+    _wait_until(lambda: window._thread is None and window._last_run is not None)
+
+    assert window._last_run.metadata["workflow"] == "custom_import_rcwa"
+    assert "Computed import RCWA results" in window.results_text.toPlainText()
+
+    destination = window.export_results_to(tmp_path / "import-result")
+    assert (destination / "TRN.mat").is_file()
+    assert (destination / "REF.mat").is_file()
+    assert not (destination / "Params.mat").exists()
+
+    window.close()
+
+
+def test_validation_run_small_grid_and_export_gating(
+    app: QApplication, tmp_path: Path
+) -> None:
+    window = MainWindow()
+    window.show()
+    _set_small_run(window)
+
+    window.validate_button.click()
+    _process_events()
+
+    assert window.run_button.isEnabled() is True
+    assert window.export_button.isEnabled() is False
+
+    window.run_button.click()
+    _wait_until(lambda: window._thread is None and window._last_run is not None)
+
+    assert window.run_button.isEnabled() is True
+    assert window.cancel_button.isEnabled() is False
+    assert window.export_button.isEnabled() is True
+    assert "Computed analytic RCWA results" in window.results_text.toPlainText()
+    assert "computed TRN0 and REF0" in window.results_plot.accessibleName()
+
+    destination = window.export_results_to(tmp_path / "gui-result")
+    assert (destination / "TRN.mat").is_file()
+    assert (destination / "REF.mat").is_file()
+    assert (destination / "manifest.json").is_file()
+
+    window.close()
+
+
+def test_gui_export_uses_default_no_overwrite(
+    app: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_save_legacy_result_bundle(
+        directory: str | Path, bundle: object, **kwargs: Any
+    ) -> Path:
+        captured["directory"] = Path(directory)
+        captured["bundle"] = bundle
+        captured["kwargs"] = kwargs
+        Path(directory).mkdir(parents=True, exist_ok=True)
+        return Path(directory)
+
+    monkeypatch.setattr(
+        "zenscat.legacy_io.save_legacy_result_bundle",
+        fake_save_legacy_result_bundle,
+    )
+
+    window = MainWindow()
+    window.show()
+    window._last_inputs = window.collect_inputs()
+    window._last_run = _LegacyExportRun(bundle=object())
+
+    destination = window.export_results_to(tmp_path / "safe-export")
+
+    assert destination == tmp_path / "safe-export"
+    assert captured["kwargs"] == {}
+
+    window.close()
+
+
+def test_gui_export_protects_existing_bundle_content(
+    app: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "existing-result"
+    destination.mkdir()
+    note = destination / "user-note.txt"
+    note.write_text("keep", encoding="utf-8")
+
+    window = MainWindow()
+    window.show()
+    window._last_inputs = window.collect_inputs()
+    window._last_run = _LegacyExportRun()
+
+    with pytest.raises(FileExistsError):
+        window.export_results_to(destination)
+    assert note.read_text(encoding="utf-8") == "keep"
+
+    monkeypatch.setattr(
+        "zenscat.gui.main_window.QFileDialog.getExistingDirectory",
+        lambda *_args, **_kwargs: str(destination),
+    )
+    window.export_results()
+
+    assert "result directory is not empty" in window.problems_text.toPlainText()
+    assert "Export failed" in window.job_status.text()
+    assert note.read_text(encoding="utf-8") == "keep"
+
+    window.close()
+
+
+def test_optimize_page_runs_real_bounded_objective(
+    app: QApplication, tmp_path: Path
+) -> None:
+    window = MainWindow()
+    window.show()
+    _set_small_run(window)
+    window.nav_list.setCurrentRow(3)
+    _set_tiny_optimization(window)
+    _process_events()
+
+    window.validate_button.click()
+    _process_events()
+    assert window.run_button.isEnabled() is True
+
+    window.run_button.click()
+    _wait_until(lambda: window._thread is None and window._last_run is not None)
+
+    assert window._last_run.metadata["workflow"] == "optimization"
+    assert window._last_run.final_run.metadata["workflow"] == "casual_rcwa"
+    assert "best fitness" in window.optimize_plot.accessibleName()
+    assert "Computed analytic RCWA results" in window.results_text.toPlainText()
+
+    destination = window.export_results_to(tmp_path / "opt-result")
+    assert (destination / "TRN.mat").is_file()
+    assert (destination / "Params.mat").is_file()
+
+    window.close()
+
+
+def test_fdfd_page_runs_fields_updates_view_and_exports(
+    app: QApplication, tmp_path: Path
+) -> None:
+    window = MainWindow()
+    window.show()
+    _set_small_run(window)
+    window.nav_list.setCurrentRow(4)
+    _set_tiny_fdfd(window)
+    _process_events()
+
+    assert "510 nm" in window.fdfd_setup_summary.text()
+    assert "period 0.32 um" in window.fdfd_setup_summary.text()
+    assert "NPML 1/1" in window.fdfd_setup_summary.text()
+
+    window.validate_button.click()
+    _process_events()
+    assert window.run_button.isEnabled() is True
+
+    window.run_button.click()
+    _wait_until(lambda: window._thread is None and window._last_run is not None)
+
+    assert window._last_run.metadata["workflow"] == "fdfd_fields"
+    assert "abs(f) heatmap" in window.field_plot.accessibleName()
+    assert "Computed FDFD field results" in window.results_text.toPlainText()
+
+    window.fdfd_field_combo.setCurrentText("real(f)")
+    _process_events()
+    assert "real(f) heatmap" in window.field_plot.accessibleName()
+    window.fdfd_field_combo.setCurrentText("ER2")
+    _process_events()
+    assert "ER2 heatmap" in window.field_plot.accessibleName()
+
+    destination = window.export_results_to(tmp_path / "fdfd-result")
+    assert (destination / "Field.mat").is_file()
+    assert (destination / "ER2.mat").is_file()
+    assert (destination / "manifest.json").is_file()
+
+    window.close()
+
+
+def test_phc_rectangle_workflow_runs_and_result_selectors_update(
+    app: QApplication,
+) -> None:
+    window = MainWindow()
+    window.show()
+    _set_small_run(window)
+    window.nav_list.setCurrentRow(2)
+    window.phc_shape_combo.setCurrentText("PhC Rectangle")
+    window.nx_input.setValue(16)
+    window.nz_input.setValue(4)
+    _process_events()
+
+    window.validate_button.click()
+    _process_events()
+    assert window.run_button.isEnabled() is True
+
+    window.run_button.click()
+    _wait_until(lambda: window._thread is None and window._last_run is not None)
+
+    assert window._last_run.metadata["workflow"] == "casual_phc_rcwa"
+    assert window._last_run.metadata["repeat_mode"] == "legacy"
+    assert "Computed PhC RCWA results" in window.results_text.toPlainText()
+
+    window.result_family_combo.setCurrentText("Energy")
+    window.result_order_combo.setCurrentText("sum")
+    _process_events()
+    assert "Energy sum" in window.results_plot.accessibleName()
+
+    window.close()
+
+
+def test_release_build_disables_pyqt_fallback(tmp_path: Path) -> None:
+    repo_root = Path(__file__).parents[1]
+    script = """
+import importlib.abc
+import sys
+
+class BlockPySide(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path, target=None):
+        if fullname == "PySide6" or fullname.startswith("PySide6."):
+            raise ImportError("blocked PySide6")
+        return None
+
+sys.meta_path.insert(0, BlockPySide())
+import zenscat.gui.qt_compat
+"""
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(repo_root / "src"),
+        "ZENSCAT_RELEASE_BUILD": "1",
+    }
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "release builds must bundle PySide6" in result.stderr
+
+
+def test_app_smoke_hook_exits_after_show() -> None:
+    repo_root = Path(__file__).parents[1]
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(repo_root / "src"),
+        "ZENSCAT_SMOKE_TEST": "1",
+        "ZENSCAT_QT_BINDING": QT_BINDING,
+    }
+    result = subprocess.run(
+        [sys.executable, "-m", "zenscat.app"],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_cancellation_contract_sets_event_and_preserves_inputs(
+    app: QApplication,
+) -> None:
+    class BlockingService:
+        def __init__(self) -> None:
+            self.cancel_seen = False
+
+        def validate(self, _inputs):
+            return ValidationResult(True, ("ok",), "ready")
+
+        def run(self, _inputs, cancel_event, progress):
+            for index in range(200):
+                progress(index, 200)
+                QCoreApplication.processEvents()
+                if cancel_event.is_set():
+                    self.cancel_seen = True
+                    raise RuntimeError("simulation cancelled")
+                time.sleep(0.002)
+            raise AssertionError("cancel was not requested")
+
+    service = BlockingService()
+    window = MainWindow(service=service)
+    window.show()
+    _set_small_run(window)
+    window.validate_button.click()
+    _process_events()
+
+    window.run_button.click()
+    _wait_until(lambda: window.cancel_button.isEnabled())
+    window.cancel_button.click()
+    _wait_until(lambda: window._thread is None)
+
+    assert service.cancel_seen is True
+    assert window.run_button.isEnabled() is True
+    assert window.export_button.isEnabled() is False
+    assert "cancelled" in window.results_text.toPlainText().lower()
+    assert window.layer_table.item(0, 1).text() == "0.182"
+
+    window.close()
