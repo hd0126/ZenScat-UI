@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from threading import Event
 from time import monotonic
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -37,6 +37,27 @@ OptimizationCompatibilityMode = Literal["legacy_exact", "corrected", "modern"]
 OptimizationParameterContract = Literal["legacy", "imported_layers"]
 OptimizerProfile = Literal["scipy_de", "ga_compat"]
 FloatArray = NDArray[np.float64]
+
+
+class RCWARunLike(Protocol):
+    """Structural result surface shared by local and external RCWA runs."""
+
+    @property
+    def transmission(self) -> DiffractionResult: ...
+
+    @property
+    def reflection(self) -> DiffractionResult: ...
+
+    @property
+    def metadata(self) -> dict[str, object]: ...
+
+    def legacy_bundle(
+        self,
+        params: ArrayLike | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> Any: ...
+
+
 SUPPORTED_OBJECTIVES: tuple[str, ...] = (
     "R(-2)",
     "R(-1)",
@@ -190,7 +211,7 @@ class OptimizationRun:
     source: ObjectiveFlavor
     objective: ObjectiveName
     optimization: OptimizationResult
-    final_run: RCWARun
+    final_run: RCWARunLike
     final_parameters: FloatArray
     final_fitness: float
     metadata: dict[str, object]
@@ -838,15 +859,17 @@ def restore_optimization_checkpoint(
     if isinstance(checkpoint, OptimizationCheckpoint):
         return checkpoint
     history_items = []
-    for raw_item in checkpoint.get("history", ()):
+    raw_history = _checkpoint_sequence(checkpoint.get("history", ()), "history")
+    for raw_item in raw_history:
         if not isinstance(raw_item, Mapping):
             raise TypeError("checkpoint history entries must be mappings")
+        item = cast(Mapping[str, object], raw_item)
         history_items.append(
             OptimizationProgress(
-                generation=int(raw_item["generation"]),
-                evaluations=int(raw_item["evaluations"]),
-                best_fitness=float(raw_item["best_fitness"]),
-                best_parameters=np.asarray(raw_item["best_parameters"], dtype=np.float64).ravel(),
+                generation=_checkpoint_int(item["generation"], "history.generation"),
+                evaluations=_checkpoint_int(item["evaluations"], "history.evaluations"),
+                best_fitness=_checkpoint_float(item["best_fitness"], "history.best_fitness"),
+                best_parameters=np.asarray(item["best_parameters"], dtype=np.float64).ravel(),
             )
         )
     profile = str(checkpoint["compatibility_profile"])
@@ -855,19 +878,48 @@ def restore_optimization_checkpoint(
     return OptimizationCheckpoint(
         lower_bounds=np.asarray(checkpoint["lower_bounds"], dtype=np.float64).ravel(),
         upper_bounds=np.asarray(checkpoint["upper_bounds"], dtype=np.float64).ravel(),
-        seed=int(checkpoint["seed"]),
-        population_size=int(checkpoint["population_size"]),
-        max_generations=int(checkpoint["max_generations"]),
-        integer_indices=tuple(int(index) for index in cast(Sequence[object], checkpoint["integer_indices"])),
-        sum_limit_count=int(checkpoint["sum_limit_count"]),
-        max_sum=None if checkpoint.get("max_sum") is None else float(cast(float, checkpoint["max_sum"])),
+        seed=_checkpoint_int(checkpoint["seed"], "seed"),
+        population_size=_checkpoint_int(checkpoint["population_size"], "population_size"),
+        max_generations=_checkpoint_int(checkpoint["max_generations"], "max_generations"),
+        integer_indices=tuple(
+            _checkpoint_int(index, "integer_indices")
+            for index in _checkpoint_sequence(checkpoint["integer_indices"], "integer_indices")
+        ),
+        sum_limit_count=_checkpoint_int(checkpoint["sum_limit_count"], "sum_limit_count"),
+        max_sum=(
+            None
+            if checkpoint.get("max_sum") is None
+            else _checkpoint_float(checkpoint["max_sum"], "max_sum")
+        ),
         compatibility_profile=cast(OptimizerProfile, profile),
-        generations_completed=int(checkpoint["generations_completed"]),
-        evaluations=int(checkpoint["evaluations"]),
-        best_fitness=float(checkpoint["best_fitness"]),
+        generations_completed=_checkpoint_int(checkpoint["generations_completed"], "generations_completed"),
+        evaluations=_checkpoint_int(checkpoint["evaluations"], "evaluations"),
+        best_fitness=_checkpoint_float(checkpoint["best_fitness"], "best_fitness"),
         best_parameters=np.asarray(checkpoint["best_parameters"], dtype=np.float64).ravel(),
         history=tuple(history_items),
     )
+
+
+def _checkpoint_sequence(value: object, name: str) -> Sequence[object]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        raise TypeError(f"checkpoint {name} must be a sequence")
+    return cast(Sequence[object], value)
+
+
+def _checkpoint_int(value: object, name: str) -> int:
+    """Decode a JSON-native integer without silently coercing strings or booleans."""
+
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"checkpoint {name} must be an integer")
+    return value
+
+
+def _checkpoint_float(value: object, name: str) -> float:
+    """Decode a JSON-native number without silently coercing strings or booleans."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"checkpoint {name} must be numeric")
+    return float(value)
 
 
 def _validate_compatibility_mode(mode: str) -> None:

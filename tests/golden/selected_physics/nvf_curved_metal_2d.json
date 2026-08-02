@@ -1,0 +1,25 @@
+{
+  "schema": "zenscat.selected-physics-fixture",
+  "schema_version": "1.0",
+  "case_id": "nvf_curved_metal_2d",
+  "source_commit": "b867a19e4386d2009d9862a39cebed3f4a078ae8",
+  "source_test": "30_개발/rcwa_studio/tests/test_physics_invariants.py::test_curved_metal_2d_nvf_is_stable",
+  "parameters": {
+    "wavelength_nm": 600.0,
+    "period_x_nm": 500.0,
+    "period_y_nm": 500.0,
+    "circle_radius_nm": 112.8,
+    "layer_thickness_nm": 100.0,
+    "material": "Au",
+    "superstrate": "Air",
+    "substrate": "SiO2",
+    "polarization": "TM",
+    "factorization": "normal_vector_field",
+    "use_matched_coordinates": false
+  },
+  "samples": [
+    {"orders": 11, "T": 0.8547059413931317},
+    {"orders": 13, "T": 0.8529175217639850},
+    {"orders": 15, "T": 0.8550170572217220}
+  ]
+}

@@ -67,6 +67,12 @@ Known exclusions and policies:
   contract. Python verifies objective semantics, deterministic optimizer
   controls, checkpoint/resume state, and final physical RCWA results instead.
 
+Advanced-physics acceptance vectors for ASR Gate B, curved-metal 2D NVF, and
+1D conical s/p conventions live under `tests/golden/selected_physics/`. They
+are pinned to a published RCWA Studio reference commit and are not local-solver
+support claims. The W18 MEEP lossy-patterned-2D case is intentionally recorded
+as blocked until a 3D volume-absorption channel independently matches `1-R-T`.
+
 ## Desktop workflows
 
 The GUI has seven pages:
@@ -206,7 +212,13 @@ print(run.result.TRN["TRN0"], run.result.f.shape)
 
 ```bash
 uv run --extra test pytest -q
+uvx --from ruff==0.16.1 ruff check src tests
+uv run --with pyright==1.1.411 pyright
 ```
+
+The Pyright baseline covers the complete non-GUI Python package. The Qt GUI is
+temporarily excluded because its binding compatibility layer creates widget
+attributes dynamically; GUI behavior remains covered by the smoke tests.
 
 MATLAB is not needed to run the committed tests or application. It is needed
 only to regenerate oracle fixtures:

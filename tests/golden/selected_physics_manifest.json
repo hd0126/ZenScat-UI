@@ -1,0 +1,50 @@
+{
+  "schema": "zenscat.selected-physics-goldens",
+  "schema_version": "1.0",
+  "created_utc": "2026-08-03",
+  "purpose": "Reference acceptance vectors and an explicit blocked boundary for the four selected advanced-physics regressions.",
+  "reference_engine": {
+    "name": "RCWA Studio",
+    "repository": "https://github.com/hd0126/RCWA-studio",
+    "commit": "b867a19e4386d2009d9862a39cebed3f4a078ae8",
+    "note": "Fixtures were recomputed from the pinned commit's existing regression helpers; they do not claim that the local ZenScat solver implements these paths."
+  },
+  "cases": [
+    {
+      "id": "asr_gate_b",
+      "status": "reference_golden",
+      "local_support": "not_implemented",
+      "fixture": "tests/golden/selected_physics/asr_gate_b.json",
+      "sha256": "6d5e1046f28ce90402cf17948324883ef4bdfdc374f527668d76c8c1e6b1f8bb",
+      "source_test": "30_개발/rcwa_studio/tests/test_physics_invariants.py::test_asr_gate_b_matches_core_at_safe_refine",
+      "tolerance": {"abs_delta_T_max": 0.015}
+    },
+    {
+      "id": "nvf_curved_metal_2d",
+      "status": "reference_golden",
+      "local_support": "not_implemented",
+      "fixture": "tests/golden/selected_physics/nvf_curved_metal_2d.json",
+      "sha256": "31d0997fde73d857ad7fcfeabf95b95f89a74fc3134a6b1dbd5de74b2013f4ec",
+      "source_test": "30_개발/rcwa_studio/tests/test_physics_invariants.py::test_curved_metal_2d_nvf_is_stable",
+      "tolerance": {"spread_T_max": 0.012}
+    },
+    {
+      "id": "w18_meep_lossy_2d",
+      "status": "blocked_boundary",
+      "local_support": "not_implemented",
+      "fixture": "tests/golden/selected_physics/w18_meep_lossy_2d.json",
+      "sha256": "6ea21b2c1277fa8eade590054c2947c80422db3340cc51651dd1ed7fce827599",
+      "source_test": "30_개발/rcwa_studio/tests/test_capability.py::test_w18_meep_lossy_patterned_2d_still_blocks",
+      "tolerance": {"volume_absorption_delta_max": 0.03}
+    },
+    {
+      "id": "conical_1d_sp",
+      "status": "reference_golden",
+      "local_support": "not_implemented",
+      "fixture": "tests/golden/selected_physics/conical_1d_sp.json",
+      "sha256": "b6898f59537643345b1404b5f1a83871bc555c865b65af8dc95e54107daab4a1",
+      "source_test": "30_개발/rcwa_studio/tests/test_physics_invariants.py::test_conical_1d_sp_basis_matches_cartesian_superposition",
+      "tolerance": {"energy_residual_max": 0.000001}
+    }
+  ]
+}

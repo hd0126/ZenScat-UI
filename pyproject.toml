@@ -38,3 +38,10 @@ packages = ["src/zenscat"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.pyright]
+include = ["src/zenscat"]
+exclude = ["src/zenscat/gui"]
+extraPaths = ["src"]
+pythonVersion = "3.12"
+typeCheckingMode = "basic"

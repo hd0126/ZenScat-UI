@@ -82,6 +82,42 @@ def test_checkpoint_round_trip_and_resume_keeps_best_seeded() -> None:
     assert any(item.generation == first.generations + 1 for item in resumed.history)
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("seed", "3", "checkpoint seed must be an integer"),
+        ("population_size", True, "checkpoint population_size must be an integer"),
+        ("max_sum", "1.5", "checkpoint max_sum must be numeric"),
+        ("evaluations", np.int64(10), "checkpoint evaluations must be an integer"),
+    ),
+)
+def test_checkpoint_restore_rejects_non_json_native_numeric_scalars(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    checkpoint = OptimizationCheckpoint(
+        lower_bounds=np.array([0.0]),
+        upper_bounds=np.array([1.0]),
+        seed=3,
+        population_size=5,
+        max_generations=2,
+        integer_indices=(),
+        sum_limit_count=0,
+        max_sum=1.5,
+        compatibility_profile="scipy_de",
+        generations_completed=1,
+        evaluations=10,
+        best_fitness=0.25,
+        best_parameters=np.array([0.5]),
+        history=(),
+    ).to_dict()
+    checkpoint[field] = value
+
+    with pytest.raises(TypeError, match=message):
+        restore_optimization_checkpoint(checkpoint)
+
+
 def test_resume_uses_remaining_generation_budget(monkeypatch: pytest.MonkeyPatch) -> None:
     seen_maxiter: list[int] = []
 

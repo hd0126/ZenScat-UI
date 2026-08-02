@@ -1,0 +1,34 @@
+{
+  "schema": "zenscat.selected-physics-fixture",
+  "schema_version": "1.0",
+  "case_id": "conical_1d_sp",
+  "source_commit": "b867a19e4386d2009d9862a39cebed3f4a078ae8",
+  "source_test": "30_개발/rcwa_studio/tests/test_physics_invariants.py::test_conical_1d_sp_basis_matches_cartesian_superposition",
+  "convention": {
+    "time_harmonic": "exp(-i*omega*t)",
+    "s": "electric field perpendicular to the incidence plane",
+    "p": "electric field parallel to the incidence plane",
+    "selector_mapping_with_sp_basis": {"TE": "s", "TM": "p"},
+    "legacy_E_H_mapping_is_valid_only_without_conical_rotation": true,
+    "conical_requires_cartesian_basis_rotation": true
+  },
+  "parameters": {
+    "wavelength_nm": 600.0,
+    "theta_deg": 15.0,
+    "period_nm": 500.0,
+    "feature_width_nm": 200.0,
+    "layer_thickness_nm": 100.0,
+    "material": "TiO2",
+    "superstrate": "Air",
+    "substrate": "SiO2",
+    "orders": 15
+  },
+  "samples": [
+    {"phi_deg": 0.0, "polarization": "s", "T": 0.34333668280375895, "R": 0.6566629921807312, "A": 3.250155098388774e-7},
+    {"phi_deg": 0.0, "polarization": "p", "T": 0.9084701214686116, "R": 0.09152983442779697, "A": 4.4103591417821164e-8},
+    {"phi_deg": 0.05, "polarization": "s", "T": 0.34334060565553765, "R": 0.6566597193759702, "A": -3.2503150793061764e-7},
+    {"phi_deg": 0.05, "polarization": "p", "T": 0.9084695101070140, "R": 0.09153044578697814, "A": 4.410600781823426e-8},
+    {"phi_deg": 30.0, "polarization": "s", "T": 0.7610947824282784, "R": 0.23890522346263765, "A": -5.8909160882691936e-9},
+    {"phi_deg": 30.0, "polarization": "p", "T": 0.8748089655029978, "R": 0.1251910360591699, "A": -1.5621677007526813e-9}
+  ]
+}

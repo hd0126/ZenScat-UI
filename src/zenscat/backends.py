@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from threading import Event
 from time import monotonic, sleep
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
@@ -411,6 +411,9 @@ def _decode_optimization_payload(
     metadata: Mapping[str, object],
 ) -> Any:
     from .optimization import (
+        SUPPORTED_OBJECTIVES,
+        ObjectiveFlavor,
+        ObjectiveName,
         OptimizationResult,
         OptimizationRun,
         restore_optimization_checkpoint,
@@ -452,9 +455,15 @@ def _decode_optimization_payload(
         "workflow": "optimization",
         "optimizer": "external",
     }
+    raw_source = str(payload.get("source", run_metadata.get("source", "analytic")))
+    if raw_source not in {"analytic", "imported"}:
+        raise ExternalSolverError("optimization source must be 'analytic' or 'imported'")
+    raw_objective = str(payload["objective"])
+    if raw_objective not in SUPPORTED_OBJECTIVES:
+        raise ExternalSolverError(f"unsupported optimization objective: {raw_objective}")
     return OptimizationRun(
-        source=str(payload.get("source", run_metadata.get("source", "analytic"))),
-        objective=str(payload["objective"]),
+        source=cast(ObjectiveFlavor, raw_source),
+        objective=cast(ObjectiveName, raw_objective),
         optimization=OptimizationResult(
             parameters=parameters,
             fitness=fitness,

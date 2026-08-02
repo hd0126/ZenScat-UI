@@ -1,0 +1,23 @@
+{
+  "schema": "zenscat.selected-physics-boundary",
+  "schema_version": "1.0",
+  "case_id": "w18_meep_lossy_2d",
+  "source_commit": "b867a19e4386d2009d9862a39cebed3f4a078ae8",
+  "source_test": "30_개발/rcwa_studio/tests/test_capability.py::test_w18_meep_lossy_patterned_2d_still_blocks",
+  "status": "blocked",
+  "block_code": "W18",
+  "backend": "meep",
+  "scope": "lossy_patterned_2d",
+  "validated_subscopes": [
+    "lossy_uniform",
+    "lossy_patterned_1d"
+  ],
+  "reason": "The 3D-cell path does not yet carry an independently integrated volume-absorption channel.",
+  "required_gate": {
+    "observable": "A_volume",
+    "must_compare_against": "1-R-T",
+    "volume_absorption_delta_max": 0.03,
+    "energy_residual_max": 0.03,
+    "require_nonnegative_absorption": true
+  }
+}

@@ -52,3 +52,21 @@ def test_release_bundle_declares_and_packages_qt_license_texts() -> None:
     assert "PySide6 / Qt for Python" in notices
     assert "GNU GENERAL PUBLIC LICENSE" in gpl.read_text(encoding="utf-8")
     assert "GNU LESSER GENERAL PUBLIC LICENSE" in lgpl.read_text(encoding="utf-8")
+
+
+def test_ci_runs_quality_checks_and_native_apple_silicon_packaging() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    assert "permissions:\n  contents: read" in workflow
+    assert "3d3c42e5aac5ba805825da76410c181273ba90b1" in workflow
+    assert "ece7cb06caefa5fff74198d8649806c4678c61a1" in workflow
+    assert "08807647e7069bb48b6ef5acd8ec9567f424441b" in workflow
+    assert "uv sync --locked" in workflow
+    assert "ruff==0.16.1" in workflow
+    assert "pyright==1.1.411" in workflow
+    assert "runs-on: macos-14" in workflow
+    assert "architecture: arm64" in workflow
+    assert "uname -m" in workflow
+    assert "./scripts/build_macos_arm64.sh" in workflow
+    assert 'ZENSCAT_SMOKE_TEST: "1"' in workflow
+    assert "dist/ZenScat.app/Contents/MacOS/ZenScat" in workflow

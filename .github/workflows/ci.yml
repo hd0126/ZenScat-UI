@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Tests, lint, and typed core
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.32"
+          enable-cache: true
+      - name: Install test environment
+        run: uv sync --locked --extra test
+      - name: Run tests
+        run: uv run pytest -q
+      - name: Run Ruff
+        run: uvx --from ruff==0.16.1 ruff check src tests
+      - name: Run Pyright baseline
+        run: uv run --with pyright==1.1.411 pyright
+      - name: Compile Python sources
+        run: uv run python -m compileall -q src/zenscat tests
+
+  macos-arm64-package:
+    name: Apple Silicon package smoke
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up native Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+          architecture: arm64
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.32"
+          enable-cache: true
+      - name: Install packaging environment
+        run: uv sync --locked --extra gui --extra build
+      - name: Verify native architecture
+        run: |
+          test "$(uname -m)" = "arm64"
+          test "$(uv run python -c 'import platform; print(platform.machine())')" = "arm64"
+      - name: Build and verify signed archive
+        env:
+          ZENSCAT_PYTHON: ${{ github.workspace }}/.venv/bin/python
+        run: ./scripts/build_macos_arm64.sh
+      - name: Launch packaged application smoke
+        env:
+          ZENSCAT_SMOKE_TEST: "1"
+        run: dist/ZenScat.app/Contents/MacOS/ZenScat

@@ -1,0 +1,26 @@
+{
+  "schema": "zenscat.selected-physics-fixture",
+  "schema_version": "1.0",
+  "case_id": "asr_gate_b",
+  "source_commit": "b867a19e4386d2009d9862a39cebed3f4a078ae8",
+  "source_test": "30_개발/rcwa_studio/tests/test_physics_invariants.py::test_asr_gate_b_matches_core_at_safe_refine",
+  "parameters": {
+    "wavelength_nm": 600.0,
+    "period_nm": 500.0,
+    "feature_width_nm": 200.0,
+    "layer_thickness_nm": 100.0,
+    "superstrate": "Air",
+    "substrate": "SiO2",
+    "asr_refine": 2.0
+  },
+  "samples": [
+    {"material": "TiO2", "polarization": "TE", "orders": 21, "base_T": 0.8757754385189696, "asr_T": 0.8729316565299543},
+    {"material": "TiO2", "polarization": "TE", "orders": 41, "base_T": 0.8757797869017877, "asr_T": 0.8743682160360439},
+    {"material": "TiO2", "polarization": "TM", "orders": 21, "base_T": 0.9708510551311462, "asr_T": 0.9716435571196130},
+    {"material": "TiO2", "polarization": "TM", "orders": 41, "base_T": 0.9708623743207032, "asr_T": 0.9709358918934395},
+    {"material": "Au", "polarization": "TE", "orders": 21, "base_T": 0.6967803096984746, "asr_T": 0.6948274741976725},
+    {"material": "Au", "polarization": "TE", "orders": 41, "base_T": 0.6968081717863902, "asr_T": 0.6957784395319859},
+    {"material": "Au", "polarization": "TM", "orders": 21, "base_T": 0.8189380898989278, "asr_T": 0.8127152632408076},
+    {"material": "Au", "polarization": "TM", "orders": 41, "base_T": 0.8231119372892031, "asr_T": 0.8150175197434992}
+  ]
+}

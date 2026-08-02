@@ -246,10 +246,10 @@ def field_transform(
         values = np.abs(field_array)
         label = "abs(f)"
     elif transform == "real":
-        values = field_array.real
+        values = np.real(field_array)
         label = "real(f)"
     elif transform == "imag":
-        values = field_array.imag
+        values = np.imag(field_array)
         label = "imag(f)"
     elif transform == "phase":
         values = np.angle(field_array)
