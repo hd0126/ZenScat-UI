@@ -24,9 +24,11 @@ try:  # pragma: no cover - exercised when PySide6 is installed.
         Signal,
     )
     from PySide6.QtGui import QAction, QColor, QPainter, QPainterPath, QPalette, QPen
+    from PySide6.QtSvg import QSvgGenerator
     from PySide6.QtWidgets import (
         QAbstractSpinBox,
         QApplication,
+        QCheckBox,
         QComboBox,
         QDoubleSpinBox,
         QFileDialog,
@@ -71,9 +73,11 @@ except ImportError:  # pragma: no cover - environment dependent.
         pyqtSignal as Signal,
     )
     from PyQt6.QtGui import QAction, QColor, QPainter, QPainterPath, QPalette, QPen
+    from PyQt6.QtSvg import QSvgGenerator
     from PyQt6.QtWidgets import (
         QAbstractSpinBox,
         QApplication,
+        QCheckBox,
         QComboBox,
         QDoubleSpinBox,
         QFileDialog,
@@ -107,6 +111,7 @@ __all__ = [
     "QAbstractSpinBox",
     "QAction",
     "QApplication",
+    "QCheckBox",
     "QColor",
     "QComboBox",
     "QCoreApplication",
@@ -134,6 +139,7 @@ __all__ = [
     "QSizePolicy",
     "QSpinBox",
     "QStackedWidget",
+    "QSvgGenerator",
     "QTabWidget",
     "QTableWidget",
     "QTableWidgetItem",

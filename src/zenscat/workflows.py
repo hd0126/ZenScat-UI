@@ -32,6 +32,7 @@ from .core import (
     launch_rcwa_s_phc,
     launch_rcwa_t,
 )
+from .core.phc import PhCInterface
 from .legacy_io import FDFDResultBundle, ImportedDevice, LegacyResultBundle
 
 MatrixMethod = Literal["S", "T"]
@@ -105,7 +106,7 @@ class PhCRCWARequest:
     wavelengths_m: ArrayLike
     angles_rad: ArrayLike
     layer_count: int
-    interface: Literal["PhC_rec_circ", "PhC_rec_square", "PhC_hex_columns"]
+    interface: PhCInterface
     interface_params: PhCInterfaceParams = field(default_factory=PhCInterfaceParams)
     harmonic_count: int = 2
     polarization: Polarization = "E"

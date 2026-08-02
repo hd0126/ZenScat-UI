@@ -67,6 +67,8 @@ def test_project_rejects_unknown_workflow() -> None:
         "optimization",
         "fdfd_fields",
         "casual_phc_rcwa",
+        "harmonic_convergence",
+        "phc_fdfd_fields",
     ],
 )
 def test_project_accepts_supported_workflows(workflow: str) -> None:

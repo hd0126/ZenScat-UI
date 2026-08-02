@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
 from tempfile import gettempdir
+from typing import Any, cast
 
 import numpy as np
 
@@ -15,6 +17,7 @@ from .qt_compat import (
     QAbstractSpinBox,
     QAction,
     QApplication,
+    QCheckBox,
     QColor,
     QComboBox,
     QDoubleSpinBox,
@@ -40,6 +43,7 @@ from .qt_compat import (
     QSizePolicy,
     QSpinBox,
     QStackedWidget,
+    QSvgGenerator,
     Qt,
     QTableWidget,
     QTableWidgetItem,
@@ -77,6 +81,8 @@ PROJECT_WORKFLOW_PAGES = {
     "optimization": "Optimize",
     "fdfd_fields": "FDFD Fields",
     "casual_phc_rcwa": "RCWA Sweep",
+    "harmonic_convergence": "RCWA Sweep",
+    "phc_fdfd_fields": "FDFD Fields",
 }
 
 PROFILE_INTERFACE_DESCRIPTIONS = {
@@ -100,6 +106,18 @@ QMainWindow, QWidget#rootShell {
     color: #17212b;
     font-family: "Inter", "Helvetica Neue", Arial, sans-serif;
     font-size: 13px;
+}
+QWidget {
+    color: #17212b;
+}
+QScrollArea, QScrollArea > QWidget > QWidget {
+    background: #eef2f5;
+    color: #17212b;
+    border: 0;
+}
+QLabel {
+    color: #17212b;
+    background: transparent;
 }
 QFrame#topStatusBar {
     background: #fbfcfd;
@@ -175,6 +193,7 @@ QLabel[locked="true"] {
 }
 QPushButton {
     background: #ffffff;
+    color: #17212b;
     border: 1px solid #b8c6d0;
     border-radius: 6px;
     padding: 7px 13px;
@@ -185,19 +204,46 @@ QPushButton#validateButton {
     color: #ffffff;
     border-color: #1f6f8b;
 }
+QPushButton:hover:enabled {
+    background: #e4f2f7;
+    border-color: #4d93ad;
+}
+QPushButton#validateButton:hover:enabled {
+    background: #185d76;
+    color: #ffffff;
+    border-color: #185d76;
+}
 QPushButton:disabled {
     color: #8c9aa5;
     background: #edf1f4;
 }
 QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit, QTableWidget {
     background: #fbfcfd;
+    color: #17212b;
     border: 1px solid #c9d3dc;
     border-radius: 5px;
     padding: 5px;
 }
+QSpinBox:hover, QDoubleSpinBox:hover, QComboBox:hover {
+    background: #f1f8fb;
+    border-color: #4d93ad;
+}
+QCheckBox {
+    spacing: 7px;
+    color: #263846;
+    padding: 3px 0;
+}
+QCheckBox:hover {
+    color: #145d77;
+}
 QTableWidget {
     gridline-color: #d9e1e8;
     selection-background-color: #d9ebf3;
+    selection-color: #17212b;
+    alternate-background-color: #f4f7f9;
+}
+QHeaderView {
+    background: #e8eef3;
 }
 QHeaderView::section {
     background: #e8eef3;
@@ -207,17 +253,27 @@ QHeaderView::section {
     padding: 7px;
     font-weight: 700;
 }
+QTableCornerButton::section {
+    background: #e8eef3;
+    border: 0;
+}
 QTabWidget::pane {
     border: 0;
 }
 QTabBar::tab {
     background: #e4ebf0;
+    color: #17212b;
     border: 1px solid #cbd6df;
     padding: 8px 10px;
 }
 QTabBar::tab:selected {
     background: #ffffff;
+    color: #17212b;
     border-bottom-color: #ffffff;
+}
+QTabBar::tab:hover:!selected {
+    background: #d6e6ed;
+    color: #145d77;
 }
 """
 
@@ -255,17 +311,34 @@ QListView::item:selected {
 class ShellInputs:
     project_name: str
     backend: str
+    compatibility_mode: str
+    external_command: str
     workflow: str
     source_mode: str
     import_path: str | None
     imported_device: object | None
     matrix_method: str
     interface: str
+    interface_smooth: bool
+    trapz_w_bot: float
+    trapz_w_top: float
+    supergauss_sigma: float
+    supergauss_m: float
+    triangle_w1: float
+    triangle_w2: float
+    triangle_w3: float
     polarization: str
     distribution: str
     period_um: float
     height_um: float
     harmonics: int
+    rcwa_run_mode: str
+    convergence_max_harmonics: int
+    convergence_tolerance: float
+    is_periodic: bool
+    period_num: int
+    flat_substrate: bool
+    calc_fresnel: bool
     layer_count: int
     n_superstrate: float
     n_substrate: float
@@ -279,13 +352,25 @@ class ShellInputs:
     params: tuple[float, ...]
     result_family: str
     result_order: str
+    result_view: str
     optimization_objective: str
+    optimization_mode: str
+    optimization_profile: str
     optimization_lower_bounds: tuple[float, ...]
     optimization_upper_bounds: tuple[float, ...]
     optimization_generations: int
     optimization_population: int
+    optimization_seed: int
+    optimization_time_limit_s: float
+    optimization_sum_limit_count: int
+    optimization_max_sum: float
+    optimization_integer_indices: tuple[int, ...]
+    optimization_checkpoint_path: str
+    optimization_resume: bool
     fdfd_interface: str
     fdfd_palette: str
+    fdfd_polarization_mode: str
+    fdfd_geometry_mode: str
     fdfd_nres: float
     fdfd_period_num: int
     fdfd_npml: tuple[int, int]
@@ -336,12 +421,14 @@ class PlotPreview(QWidget):
         self._y_label = y_label
         self._mode = mode
         self._watermark = "No computed results"
+        self._message: str | None = None
         self._transmission: np.ndarray | None = None
         self._reflection: np.ndarray | None = None
         self._series: np.ndarray | None = None
         self._series_label: str | None = None
         self._heatmap: np.ndarray | None = None
         self._heatmap_label: str | None = None
+        self._heatmap_contours: np.ndarray | None = None
         self._profile_thicknesses = np.asarray([0.182, 0.120], dtype=np.float64)
         self._profile_indices = np.asarray([1.781, 1.650], dtype=np.float64)
         self._profile_interface = "sin"
@@ -408,6 +495,11 @@ class PlotPreview(QWidget):
             return None
         return self._profile_x_um.copy(), self._profile_z_um.copy()
 
+    def set_axis_labels(self, x_label: str, y_label: str) -> None:
+        self._x_label = x_label
+        self._y_label = y_label
+        self.update()
+
     def clear_results(self) -> None:
         self._transmission = None
         self._reflection = None
@@ -415,6 +507,8 @@ class PlotPreview(QWidget):
         self._series_label = None
         self._heatmap = None
         self._heatmap_label = None
+        self._heatmap_contours = None
+        self._message = None
         if self._mode != "stack":
             self.setAccessibleName(f"{self._title}: {self._watermark}")
         self.update()
@@ -422,6 +516,12 @@ class PlotPreview(QWidget):
     def set_results(self, transmission: np.ndarray, reflection: np.ndarray) -> None:
         self._transmission = np.asarray(transmission, dtype=np.float64)
         self._reflection = np.asarray(reflection, dtype=np.float64)
+        self._series = None
+        self._series_label = None
+        self._heatmap = None
+        self._heatmap_label = None
+        self._heatmap_contours = None
+        self._message = None
         self.setAccessibleName(f"{self._title}: computed TRN0 and REF0")
         self.update()
 
@@ -430,12 +530,20 @@ class PlotPreview(QWidget):
         self._reflection = None
         self._heatmap = None
         self._heatmap_label = None
+        self._heatmap_contours = None
+        self._message = None
         self._series = np.asarray(values, dtype=np.float64).ravel()
         self._series_label = label
         self.setAccessibleName(f"{self._title}: computed {label}")
         self.update()
 
-    def set_heatmap(self, values: np.ndarray, label: str) -> None:
+    def set_heatmap(
+        self,
+        values: np.ndarray,
+        label: str,
+        *,
+        contours: np.ndarray | None = None,
+    ) -> None:
         self._transmission = None
         self._reflection = None
         self._series = None
@@ -445,7 +553,23 @@ class PlotPreview(QWidget):
             heatmap = np.abs(heatmap)
         self._heatmap = np.asarray(heatmap, dtype=np.float64)
         self._heatmap_label = label
+        self._message = None
+        if contours is None:
+            self._heatmap_contours = None
+        else:
+            contour_array = np.asarray(contours, dtype=np.bool_)
+            if contour_array.shape != self._heatmap.shape:
+                raise ValueError("heatmap contours must match the heatmap shape")
+            self._heatmap_contours = contour_array
         self.setAccessibleName(f"{self._title}: computed {label} heatmap")
+        self.update()
+
+    def set_message(self, message: str) -> None:
+        """Replace stale plot data with a visible, accessible status message."""
+
+        self.clear_results()
+        self._message = message
+        self.setAccessibleName(f"{self._title}: {message}")
         self.update()
 
     def paintEvent(self, _event) -> None:  # type: ignore[override]
@@ -494,7 +618,9 @@ class PlotPreview(QWidget):
         if self._mode == "stack":
             self._draw_profile_cross_section(painter, plot)
         elif self._heatmap is not None:
-            self._draw_heatmap(painter, plot, self._heatmap)
+            self._draw_heatmap(
+                painter, plot, self._heatmap, contours=self._heatmap_contours
+            )
             painter.setPen(QPen(QColor("#223747"), 1))
             painter.drawText(
                 QRectF(plot),
@@ -512,7 +638,7 @@ class PlotPreview(QWidget):
             painter.drawText(
                 QRectF(plot),
                 Qt.AlignmentFlag.AlignCenter,
-                self._watermark,
+                self._message or self._watermark,
             )
         else:
             self._draw_series(painter, plot, self._transmission, QColor("#1f6f8b"))
@@ -688,8 +814,20 @@ class PlotPreview(QWidget):
         data = data.ravel()
         if data.size == 0:
             return
-        y_min = 0.0
-        y_max = max(1.0, float(np.max(data)))
+        if not np.isfinite(data).all():
+            return
+        data_min = float(np.min(data))
+        data_max = float(np.max(data))
+        if data_max <= 0.0:
+            y_min = data_min
+            y_max = data_max
+        else:
+            y_min = min(0.0, data_min)
+            y_max = data_max
+        if np.isclose(y_min, y_max):
+            padding = max(abs(y_min) * 0.1, 1.0)
+            y_min -= padding
+            y_max += padding
         points: list[tuple[float, float]] = []
         for index, value in enumerate(data):
             x_ratio = 0.0 if data.size == 1 else index / (data.size - 1)
@@ -703,14 +841,31 @@ class PlotPreview(QWidget):
         painter.setPen(QPen(color, 2))
         for (x0, y0), (x1, y1) in pairwise(points):
             painter.drawLine(int(x0), int(y0), int(x1), int(y1))
+        painter.setBrush(color)
+        for x_value, y_value in points:
+            painter.drawEllipse(QRectF(x_value - 2.5, y_value - 2.5, 5.0, 5.0))
 
-    def _draw_heatmap(self, painter: QPainter, plot, values: np.ndarray) -> None:
+    def _draw_heatmap(
+        self,
+        painter: QPainter,
+        plot,
+        values: np.ndarray,
+        *,
+        contours: np.ndarray | None = None,
+    ) -> None:
         data = np.asarray(values, dtype=np.float64)
         if data.ndim == 1:
             data = data[np.newaxis, :]
         if data.size == 0:
             return
-        data = data[:: max(1, data.shape[0] // 48), :: max(1, data.shape[1] // 80)]
+        row_step = max(1, data.shape[0] // 48)
+        column_step = max(1, data.shape[1] // 80)
+        data = data[::row_step, ::column_step]
+        contour_data = (
+            None
+            if contours is None
+            else np.asarray(contours, dtype=np.bool_)[::row_step, ::column_step]
+        )
         low = float(np.nanmin(data))
         high = float(np.nanmax(data))
         span = high - low if high > low else 1.0
@@ -733,6 +888,16 @@ class PlotPreview(QWidget):
                     ),
                     color,
                 )
+                if contour_data is not None and contour_data[row, column]:
+                    painter.setPen(QPen(QColor("#f8fbfd"), 1))
+                    painter.drawRect(
+                        QRectF(
+                            plot.left() + column * cell_w,
+                            plot.top() + row * cell_h,
+                            cell_w + 0.5,
+                            cell_h + 0.5,
+                        )
+                    )
 
 
 class SolverService:
@@ -742,6 +907,14 @@ class SolverService:
         messages: list[str] = []
         if not inputs.project_name.strip():
             messages.append("Project name is required.")
+        if inputs.backend == "External CLI":
+            from zenscat.backends import configured_external_backend
+
+            availability = configured_external_backend(
+                inputs.external_command
+            ).availability()
+            if not availability.available:
+                messages.append(availability.detail)
         if inputs.source_mode == "Import" and inputs.imported_device is None:
             messages.append("Import source requires a loaded MATLAB or NumPy device.")
         if inputs.workflow == "optimization":
@@ -754,11 +927,19 @@ class SolverService:
                 and len(inputs.optimization_lower_bounds) != 3
             ):
                 messages.append("Analytic optimization requires 3 legacy bounds.")
-            if (
-                inputs.source_mode == "Import"
-                and len(inputs.optimization_lower_bounds) < 4
-            ):
-                messages.append("Imported optimization requires 4 legacy bounds.")
+            if inputs.source_mode == "Import":
+                if inputs.optimization_mode == "modern":
+                    expected = (
+                        0
+                        if inputs.imported_device is None
+                        else int(inputs.imported_device.sub_L_um.size)
+                    )
+                    if len(inputs.optimization_lower_bounds) != expected:
+                        messages.append(
+                            "Modern imported optimization requires one bound per layer."
+                        )
+                elif len(inputs.optimization_lower_bounds) < 4:
+                    messages.append("Imported optimization requires 4 legacy bounds.")
             if any(
                 lower > upper
                 for lower, upper in zip(
@@ -769,11 +950,23 @@ class SolverService:
                 messages.append("Optimization lower bounds must be <= upper bounds.")
             if inputs.source_mode == "Import" and (
                 inputs.imported_device is None
-                or inputs.imported_device.sub_L_um.size < 3
+                or (
+                    inputs.optimization_mode != "modern"
+                    and inputs.imported_device.sub_L_um.size < 3
+                )
             ):
                 messages.append(
                     "Imported optimization requires a loaded device with 3 layers."
                 )
+            if inputs.optimization_sum_limit_count > len(
+                inputs.optimization_lower_bounds
+            ):
+                messages.append("Optimization sum constraint exceeds the parameter count.")
+            if any(
+                index >= len(inputs.optimization_lower_bounds)
+                for index in inputs.optimization_integer_indices
+            ):
+                messages.append("Optimization integer index exceeds the parameter count.")
         if inputs.period_um <= 0:
             messages.append("Device period must be positive.")
         if inputs.height_um <= 0:
@@ -782,6 +975,29 @@ class SolverService:
             messages.append("At least one layer is required.")
         if inputs.harmonics < 1:
             messages.append("Harmonics must be at least one.")
+        if (
+            inputs.rcwa_run_mode == "Harmonic convergence"
+            and inputs.convergence_max_harmonics < 2
+        ):
+            messages.append("Convergence requires at least two harmonic samples.")
+        if inputs.is_periodic and inputs.layer_count < 2:
+            messages.append("Periodic replication requires at least two layers.")
+        if (
+            inputs.workflow == "fdfd"
+            and inputs.fdfd_geometry_mode == "Selected PhC"
+            and inputs.compatibility_mode == "legacy_exact"
+        ):
+            messages.append(
+                "Legacy Device_FDFD_PhC.m is incomplete; select corrected or modern."
+            )
+        if (
+            inputs.workflow in {"phc", "convergence"}
+            and inputs.phc_shape in {"PhC Honeycomb", "PhC Rotated Hex"}
+            and inputs.compatibility_mode == "legacy_exact"
+        ):
+            messages.append(
+                "This PhC geometry has no complete MATLAB oracle; select corrected or modern."
+            )
         if len(inputs.params) != inputs.layer_count * 2:
             messages.append(
                 "Legacy Params must contain thicknesses followed by indices."
@@ -818,6 +1034,13 @@ class SolverService:
             from zenscat.optimization import OptimizationRequest
 
             source = "imported" if inputs.source_mode == "Import" else "analytic"
+            checkpoint = None
+            if inputs.optimization_resume:
+                checkpoint_path = Path(inputs.optimization_checkpoint_path)
+                if not checkpoint_path.is_file():
+                    raise ValueError("Optimization resume requires an existing checkpoint file.")
+                checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            imported_layers = source == "imported" and inputs.optimization_mode == "modern"
             return OptimizationRequest(
                 source=source,
                 template=self._build_rcwa_request(inputs),
@@ -826,11 +1049,94 @@ class SolverService:
                 upper_bounds=np.asarray(inputs.optimization_upper_bounds),
                 max_generations=inputs.optimization_generations,
                 population_size=inputs.optimization_population,
-                seed=0,
+                seed=inputs.optimization_seed,
+                integer_indices=inputs.optimization_integer_indices,
+                sum_limit_count=inputs.optimization_sum_limit_count,
+                max_sum=(
+                    inputs.optimization_max_sum
+                    if inputs.optimization_sum_limit_count
+                    else None
+                ),
+                time_limit_s=(
+                    inputs.optimization_time_limit_s
+                    if inputs.optimization_time_limit_s > 0
+                    else None
+                ),
                 polish=False,
+                compatibility_mode=inputs.optimization_mode,
+                parameter_contract="imported_layers" if imported_layers else "legacy",
+                imported_layer_indices=(
+                    tuple(range(len(inputs.optimization_lower_bounds)))
+                    if imported_layers
+                    else None
+                ),
+                optimizer_profile=inputs.optimization_profile,
+                checkpoint=checkpoint,
             )
         if inputs.workflow == "fdfd":
+            from zenscat.advanced_workflows import PhCFDFDRequest
+            from zenscat.core import InterfaceParams, PhCInterfaceParams
             from zenscat.workflows import FDFDRequest
+
+            if inputs.fdfd_geometry_mode == "Selected PhC":
+                interface = {
+                    "PhC Rectangle": "PhC_rec_square",
+                    "PhC Ellipse": "PhC_rec_circ",
+                    "PhC Hex": "PhC_hex_columns",
+                    "PhC Honeycomb": "PhC_honeycomb",
+                    "PhC Rotated Hex": "PhC_hex_columns_rot",
+                }.get(inputs.phc_shape)
+                if interface is None:
+                    raise ValueError(
+                        "Selected PhC FDFD geometry requires a PhC mode on RCWA Sweep."
+                    )
+                return PhCFDFDRequest(
+                    params=np.asarray(
+                        (
+                            inputs.phc_pitch_um,
+                            inputs.phc_background_n,
+                            inputs.phc_inclusion_n,
+                        ),
+                        dtype=np.float64,
+                    ),
+                    wavelengths_um=np.linspace(
+                        inputs.wavelength_start_nm,
+                        inputs.wavelength_stop_nm,
+                        inputs.sweep_points,
+                    )
+                    / 1000.0,
+                    angles_rad=np.deg2rad(
+                        np.linspace(
+                            inputs.angle_start_deg,
+                            inputs.angle_stop_deg,
+                            inputs.sweep_points,
+                        )
+                    ),
+                    polarization=inputs.polarization,
+                    interface=interface,
+                    interface_params=PhCInterfaceParams(
+                        rec_2D_wx=inputs.phc_wx,
+                        rec_2D_wy=inputs.phc_wy,
+                        rec_rot_angle=inputs.phc_rotation_deg,
+                        ax=inputs.phc_ax,
+                        ay=inputs.phc_ay,
+                        ellipse_rot_angle=inputs.phc_rotation_deg,
+                        radius_star_ellipse=inputs.phc_radius,
+                        hex_rot_angle=inputs.phc_rotation_deg,
+                    ),
+                    Lx_um=inputs.phc_pitch_um,
+                    h_um=inputs.height_um,
+                    n_superstrate=inputs.n_superstrate,
+                    n_substrate=inputs.n_substrate,
+                    nres=inputs.fdfd_nres,
+                    spacer_um=np.asarray(inputs.fdfd_spacer_um, dtype=np.float64),
+                    npml=np.asarray(inputs.fdfd_npml, dtype=np.int64),
+                    compatibility=(
+                        "legacy_exact"
+                        if inputs.compatibility_mode == "legacy_exact"
+                        else "corrected"
+                    ),
+                )
 
             return FDFDRequest(
                 params=np.asarray(inputs.params, dtype=np.float64),
@@ -851,6 +1157,16 @@ class SolverService:
                 polarization=inputs.polarization,
                 distribution=inputs.distribution,
                 interface=inputs.fdfd_interface,
+                interface_params=InterfaceParams(
+                    smooth=inputs.interface_smooth,
+                    trapz_w_bot=inputs.trapz_w_bot,
+                    trapz_w_top=inputs.trapz_w_top,
+                    supergauss_sigma=inputs.supergauss_sigma,
+                    supergauss_m=inputs.supergauss_m,
+                    triangle_w1=inputs.triangle_w1,
+                    triangle_w2=inputs.triangle_w2,
+                    triangle_w3=inputs.triangle_w3,
+                ),
                 Lx_um=inputs.period_um,
                 h_um=inputs.height_um,
                 n_superstrate=inputs.n_superstrate,
@@ -858,14 +1174,16 @@ class SolverService:
                 nres=inputs.fdfd_nres,
                 spacer_um=np.asarray(inputs.fdfd_spacer_um, dtype=np.float64),
                 npml=np.asarray(inputs.fdfd_npml, dtype=np.int64),
-                is_periodic=True,
-                period_num=inputs.fdfd_period_num,
+                is_periodic=inputs.is_periodic,
+                period_num=(
+                    inputs.period_num if inputs.is_periodic else inputs.fdfd_period_num
+                ),
                 refractive_idx=inputs.fdfd_palette != "manual legacy",
                 dispersion_mode="corrected_um"
                 if inputs.fdfd_palette == "material corrected"
                 else "legacy_fdfd",
             )
-        if inputs.workflow == "phc":
+        if inputs.workflow in {"phc", "convergence"} and inputs.phc_shape != "1D Analytic/Import":
             from zenscat.core import PhCInterfaceParams
             from zenscat.workflows import PhCRCWARequest
 
@@ -873,6 +1191,8 @@ class SolverService:
                 "PhC Rectangle": "PhC_rec_square",
                 "PhC Ellipse": "PhC_rec_circ",
                 "PhC Hex": "PhC_hex_columns",
+                "PhC Honeycomb": "PhC_honeycomb",
+                "PhC Rotated Hex": "PhC_hex_columns_rot",
             }[inputs.phc_shape]
             return PhCRCWARequest(
                 params=np.asarray(
@@ -906,6 +1226,7 @@ class SolverService:
                     ay=inputs.phc_ay,
                     ellipse_rot_angle=inputs.phc_rotation_deg,
                     radius_star_ellipse=inputs.phc_radius,
+                    hex_rot_angle=inputs.phc_rotation_deg,
                 ),
                 harmonic_count=inputs.harmonics,
                 polarization=inputs.polarization,
@@ -916,6 +1237,7 @@ class SolverService:
                 repeat_mode="corrected"
                 if inputs.phc_repeat_mode.startswith("corrected")
                 else "legacy",
+                calc_fresnel=inputs.calc_fresnel,
             )
         return self._build_rcwa_request(inputs)
 
@@ -947,8 +1269,10 @@ class SolverService:
                 polarization=inputs.polarization,
                 n_superstrate=inputs.n_superstrate,
                 n_substrate=inputs.n_substrate,
+                calc_fresnel=inputs.calc_fresnel,
             )
 
+        from zenscat.core import InterfaceParams
         from zenscat.workflows import AnalyticRCWARequest
 
         return AnalyticRCWARequest(
@@ -961,12 +1285,26 @@ class SolverService:
             polarization=inputs.polarization,
             distribution=inputs.distribution,
             interface=inputs.interface,
+            interface_params=InterfaceParams(
+                smooth=inputs.interface_smooth,
+                trapz_w_bot=inputs.trapz_w_bot,
+                trapz_w_top=inputs.trapz_w_top,
+                supergauss_sigma=inputs.supergauss_sigma,
+                supergauss_m=inputs.supergauss_m,
+                triangle_w1=inputs.triangle_w1,
+                triangle_w2=inputs.triangle_w2,
+                triangle_w3=inputs.triangle_w3,
+            ),
             Lx_um=inputs.period_um,
             h_um=inputs.height_um,
             Nx=inputs.nx,
             Nz=inputs.nz,
             n_superstrate=inputs.n_superstrate,
             n_substrate=inputs.n_substrate,
+            is_periodic=inputs.is_periodic,
+            period_num=inputs.period_num,
+            flat_substrate=inputs.flat_substrate,
+            calc_fresnel=inputs.calc_fresnel,
         )
 
     def run(
@@ -978,30 +1316,84 @@ class SolverService:
         validation = self.validate(inputs)
         if not validation.ok:
             raise ValueError("; ".join(validation.messages))
-        if inputs.workflow == "optimization":
-            from zenscat.optimization import run_optimization
-
-            return run_optimization(
-                self.build_request(inputs),
-                cancel_event=cancel_event,
-                progress=lambda snapshot: progress(
-                    snapshot.generation, inputs.optimization_generations
-                ),
-                solver_progress=progress,
+        request = self.build_request(inputs)
+        if inputs.backend == "External CLI":
+            from zenscat.backends import (
+                configured_external_backend,
+                decode_external_run,
             )
-        if inputs.workflow == "fdfd":
-            from zenscat.workflows import run_fdfd
 
-            return run_fdfd(
-                self.build_request(inputs),
+            response = configured_external_backend(inputs.external_command).run(
+                {
+                    "schema": "zenscat.external-request",
+                    "schema_version": "1.0",
+                    "workflow": inputs.workflow,
+                    "compatibility_mode": inputs.compatibility_mode,
+                    "request": request,
+                },
+                cancel_event=cancel_event,
+            )
+            progress(1, 1)
+            return decode_external_run(response)
+        if inputs.workflow == "convergence":
+            from zenscat.convergence import run_harmonic_convergence
+
+            return run_harmonic_convergence(
+                request,
+                max_harmonic_count=inputs.convergence_max_harmonics,
+                tolerance=inputs.convergence_tolerance,
                 cancel_token=cancel_event,
                 progress=progress,
             )
+        if inputs.workflow == "optimization":
+            from zenscat.optimization import run_optimization
+
+            def on_optimization_progress(snapshot: object) -> None:
+                progress_snapshot = cast(Any, snapshot)
+                progress(
+                    progress_snapshot.generation,
+                    inputs.optimization_generations,
+                )
+
+            def on_merit_progress(snapshot: object) -> None:
+                snapshot_callback = getattr(progress, "optimization", None)
+                if callable(snapshot_callback):
+                    snapshot_callback(snapshot)
+
+            return run_optimization(
+                request,
+                cancel_event=cancel_event,
+                progress=on_optimization_progress,
+                merit_progress=on_merit_progress,
+                solver_progress=progress,
+            )
+        if inputs.workflow == "fdfd":
+            from zenscat.advanced_workflows import (
+                PhCFDFDRequest,
+                run_dual_fdfd,
+                run_dual_phc_fdfd,
+                run_phc_fdfd,
+            )
+            from zenscat.workflows import run_fdfd
+
+            if isinstance(request, PhCFDFDRequest):
+                operation = (
+                    run_dual_phc_fdfd
+                    if inputs.fdfd_polarization_mode == "Both E + H"
+                    else run_phc_fdfd
+                )
+            else:
+                operation = (
+                    run_dual_fdfd
+                    if inputs.fdfd_polarization_mode == "Both E + H"
+                    else run_fdfd
+                )
+            return operation(request, cancel_token=cancel_event, progress=progress)
         if inputs.workflow == "phc":
             from zenscat.workflows import run_phc_rcwa
 
             return run_phc_rcwa(
-                self.build_request(inputs),
+                request,
                 cancel_token=cancel_event,
                 progress=progress,
             )
@@ -1009,7 +1401,7 @@ class SolverService:
             from zenscat.workflows import run_imported_rcwa
 
             return run_imported_rcwa(
-                self.build_request(inputs),
+                request,
                 cancel_token=cancel_event,
                 progress=progress,
             )
@@ -1017,19 +1409,55 @@ class SolverService:
         from zenscat.workflows import run_analytic_rcwa
 
         return run_analytic_rcwa(
-            self.build_request(inputs), cancel_token=cancel_event, progress=progress
+            request, cancel_token=cancel_event, progress=progress
         )
 
     def export(self, run, inputs: ShellInputs, destination: str | Path) -> Path:
         from zenscat.legacy_io import save_fdfd_result_bundle, save_legacy_result_bundle
 
+        if hasattr(run, "fdfd_bundles"):
+            root = Path(destination).expanduser().resolve()
+            if root.exists() and any(root.iterdir()):
+                raise FileExistsError(f"result directory is not empty: {root}")
+            root.mkdir(parents=True, exist_ok=True)
+            bundles = run.fdfd_bundles(
+                params=np.asarray(inputs.params, dtype=np.float64)
+            )
+            for polarization, bundle in bundles.items():
+                save_fdfd_result_bundle(
+                    root / polarization,
+                    bundle,
+                    compatibility_mode=inputs.compatibility_mode,
+                )
+            (root / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "zenscat.dual-fdfd-result-bundle",
+                        "schema_version": "1.0",
+                        "polarizations": sorted(bundles),
+                        "compatibility_mode": inputs.compatibility_mode,
+                        "metadata": run.metadata,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            return root
         if hasattr(run, "fdfd_bundle"):
             return save_fdfd_result_bundle(
                 destination,
                 run.fdfd_bundle(params=np.asarray(inputs.params, dtype=np.float64)),
+                compatibility_mode=inputs.compatibility_mode,
             )
         if hasattr(run, "legacy_bundle") and inputs.workflow == "optimization":
-            return save_legacy_result_bundle(destination, run.legacy_bundle())
+            return save_legacy_result_bundle(
+                destination,
+                run.legacy_bundle(),
+                compatibility_mode=inputs.compatibility_mode,
+            )
 
         params = None
         if inputs.workflow == "phc":
@@ -1044,14 +1472,35 @@ class SolverService:
         elif inputs.source_mode != "Import":
             params = np.asarray(inputs.params, dtype=np.float64)
 
+        target = run.final_run if inputs.workflow == "convergence" else run
         return save_legacy_result_bundle(
             destination,
-            run.legacy_bundle(params=params),
+            target.legacy_bundle(params=params),
+            compatibility_mode=inputs.compatibility_mode,
         )
+
+
+class _WorkerProgress:
+    """Keep generic service callbacks compatible while routing merit snapshots."""
+
+    def __init__(
+        self,
+        emit_progress: Callable[[int, int], None],
+        emit_optimization: Callable[[object], None],
+    ) -> None:
+        self._emit_progress = emit_progress
+        self._emit_optimization = emit_optimization
+
+    def __call__(self, completed: int, total: int) -> None:
+        self._emit_progress(completed, total)
+
+    def optimization(self, snapshot: object) -> None:
+        self._emit_optimization(snapshot)
 
 
 class RunWorker(QObject):
     progress = Signal(int, int)
+    optimization_progress = Signal(object)
     finished = Signal(object)
     failed = Signal(str)
     cancelled = Signal()
@@ -1066,8 +1515,14 @@ class RunWorker(QObject):
 
     def run(self) -> None:
         try:
+            progress = _WorkerProgress(
+                self.progress.emit,
+                self.optimization_progress.emit,
+            )
             result = self._service.run(
-                self._inputs, self._cancel_event, self.progress.emit
+                self._inputs,
+                self._cancel_event,
+                progress,
             )
         except Exception as exc:  # noqa: BLE001 - GUI worker must signal backend failures.
             if (
@@ -1103,6 +1558,7 @@ class MainWindow(QMainWindow):
         self._project_path: Path | None = None
         self._imported_device: object | None = None
         self._import_path: Path | None = None
+        self._optimization_history: list[float] = []
         self._validated = False
 
         self._build_actions()
@@ -1344,8 +1800,23 @@ class MainWindow(QMainWindow):
 
         self.backend_combo = QComboBox()
         self.backend_combo.setObjectName("backendCombo")
-        self.backend_combo.addItems(("Local Python", "External solver"))
+        self.backend_combo.addItems(("Local Python", "External CLI"))
         self._configure_combo(self.backend_combo)
+        self.compatibility_mode_combo = QComboBox()
+        self.compatibility_mode_combo.setObjectName("compatibilityModeCombo")
+        self.compatibility_mode_combo.addItems(
+            ("legacy_exact", "corrected", "modern")
+        )
+        self.compatibility_mode_combo.setCurrentText("modern")
+        self._configure_combo(self.compatibility_mode_combo)
+        self.external_command_combo = QComboBox()
+        self.external_command_combo.setObjectName("externalCommandCombo")
+        self.external_command_combo.setEditable(True)
+        self.external_command_combo.addItem("")
+        self.external_command_combo.setToolTip(
+            "Command implementing the --zenscat-request/--zenscat-result JSON protocol."
+        )
+        self._configure_combo(self.external_command_combo)
         self.project_name = QComboBox()
         self.project_name.setObjectName("projectNameCombo")
         self.project_name.setEditable(True)
@@ -1372,6 +1843,8 @@ class MainWindow(QMainWindow):
         form.addRow("Project", self.project_name)
         form.addRow("Source", self.source_combo)
         form.addRow("Backend", self.backend_combo)
+        form.addRow("Compatibility", self.compatibility_mode_combo)
+        form.addRow("External command", self.external_command_combo)
         form.addRow("Method", self.method_combo)
         form.addRow("Interface", self.interface_combo)
         form.addRow("Distribution", self.distribution_combo)
@@ -1533,6 +2006,69 @@ class MainWindow(QMainWindow):
         row.addWidget(table_card, 2)
         page.layout().addLayout(row)
 
+        geometry_card = self._card("interfaceParameterCard")
+        geometry_card.layout().addWidget(
+            self._section_label("Interface and stack compatibility", "interfaceParameterTitle")
+        )
+        geometry_form = self._form_layout()
+        self.interface_smooth = QCheckBox("Smooth sampled permittivity")
+        self.interface_smooth.setObjectName("interfaceSmoothCheck")
+        self.trapz_bottom = self._double(
+            "trapzBottomInput", 0.0001, 1000.0, 0.195, " um"
+        )
+        self.trapz_top = self._double(
+            "trapzTopInput", 0.0001, 1000.0, 0.375, " um"
+        )
+        self.supergauss_sigma = self._double(
+            "supergaussSigmaInput", 0.0001, 1000.0, 0.30615 / 2.355, " um"
+        )
+        self.supergauss_m = self._double(
+            "supergaussOrderInput", 0.1, 64.0, 2.0, ""
+        )
+        self.triangle_w1 = self._double(
+            "triangleW1Input", 0.0001, 1000.0, 0.25, " um"
+        )
+        self.triangle_w2 = self._double(
+            "triangleW2Input", 0.0001, 1000.0, 0.3, " um"
+        )
+        self.triangle_w3 = self._double(
+            "triangleW3Input", 0.0001, 1000.0, 0.1, " um"
+        )
+        self.periodic_stack = QCheckBox("Replicate alternating stack")
+        self.periodic_stack.setObjectName("periodicStackCheck")
+        self.periodic_count = self._integer("periodicCountInput", 1, 1001, 33)
+        self.flat_substrate = QCheckBox("Use flat substrate boundary")
+        self.flat_substrate.setObjectName("flatSubstrateCheck")
+        self.calc_fresnel = QCheckBox("Calculate Fresnel reference")
+        self.calc_fresnel.setObjectName("calcFresnelCheck")
+        geometry_form.addRow("Sampling", self.interface_smooth)
+        geometry_form.addRow(
+            "DE1 bottom / top",
+            self._inline_pair(self.trapz_bottom, self.trapz_top),
+        )
+        geometry_form.addRow(
+            "DE4 sigma / order",
+            self._inline_pair(self.supergauss_sigma, self.supergauss_m),
+        )
+        geometry_form.addRow(
+            "Triangle w1 / w2",
+            self._inline_pair(self.triangle_w1, self.triangle_w2),
+        )
+        geometry_form.addRow("Triangle w3", self.triangle_w3)
+        geometry_form.addRow("Periodic stack", self.periodic_stack)
+        geometry_form.addRow("Repeat count", self.periodic_count)
+        geometry_form.addRow("Substrate", self.flat_substrate)
+        geometry_form.addRow("Reference", self.calc_fresnel)
+        geometry_card.layout().addLayout(geometry_form)
+        geometry_note = QLabel(
+            "Parameters are shared by the live profile and solver. legacy_exact "
+            "preserves MATLAB defaults; corrected/modern modes expose repaired behavior."
+        )
+        geometry_note.setProperty("class", "muted")
+        geometry_note.setWordWrap(True)
+        geometry_card.layout().addWidget(geometry_note)
+        page.layout().addWidget(geometry_card)
+
         self.structure_plot = PlotPreview(
             "structurePlotPreview",
             "Layer geometry preview",
@@ -1572,6 +2108,16 @@ class MainWindow(QMainWindow):
         )
         self.sweep_points = self._integer("sweepPointsInput", 1, 10001, 3)
         self.harmonics = self._integer("harmonicsInput", 1, 64, 2)
+        self.rcwa_run_mode_combo = QComboBox()
+        self.rcwa_run_mode_combo.setObjectName("rcwaRunModeCombo")
+        self.rcwa_run_mode_combo.addItems(("Sweep", "Harmonic convergence"))
+        self._configure_combo(self.rcwa_run_mode_combo)
+        self.convergence_max_harmonics = self._integer(
+            "convergenceMaxHarmonicsInput", 2, 128, 12
+        )
+        self.convergence_tolerance = self._double(
+            "convergenceToleranceInput", 1e-12, 1.0, 1e-4, ""
+        )
         self.nx_input = self._integer("nxInput", 16, 4096, 128)
         self.nz_input = self._integer("nzInput", 1, 512, 5)
         self.mode_combo = QComboBox()
@@ -1588,6 +2134,9 @@ class MainWindow(QMainWindow):
         form.addRow("Angle stop", self.angle_stop_deg)
         form.addRow("Points", self.sweep_points)
         form.addRow("Harmonics", self.harmonics)
+        form.addRow("Run mode", self.rcwa_run_mode_combo)
+        form.addRow("Convergence max NH", self.convergence_max_harmonics)
+        form.addRow("Convergence tolerance", self.convergence_tolerance)
         form.addRow("Nx", self.nx_input)
         form.addRow("Nz", self.nz_input)
         control_card.layout().addLayout(form)
@@ -1611,7 +2160,14 @@ class MainWindow(QMainWindow):
         self.phc_shape_combo = QComboBox()
         self.phc_shape_combo.setObjectName("phcShapeCombo")
         self.phc_shape_combo.addItems(
-            ("1D Analytic/Import", "PhC Rectangle", "PhC Ellipse", "PhC Hex")
+            (
+                "1D Analytic/Import",
+                "PhC Rectangle",
+                "PhC Ellipse",
+                "PhC Hex",
+                "PhC Honeycomb",
+                "PhC Rotated Hex",
+            )
         )
         self._configure_combo(self.phc_shape_combo)
         self.phc_repeat_combo = QComboBox()
@@ -1664,12 +2220,16 @@ class MainWindow(QMainWindow):
         self.optimization_objective.setObjectName("optimizationObjectiveCombo")
         self.optimization_objective.addItems(
             (
+                "R(-2)",
                 "R(-1)",
                 "R(0)",
                 "R(+1)",
+                "R(+2)",
+                "T(-2)",
                 "T(-1)",
                 "T(0)",
                 "T(+1)",
+                "T(+2)",
                 "Absorption",
                 "Gain",
             )
@@ -1682,9 +2242,55 @@ class MainWindow(QMainWindow):
         self.optimization_population = self._integer(
             "optimizationPopulationInput", 1, 200, 15
         )
+        self.optimization_mode_combo = QComboBox()
+        self.optimization_mode_combo.setObjectName("optimizationModeCombo")
+        self.optimization_mode_combo.addItems(("legacy_exact", "corrected", "modern"))
+        self.optimization_mode_combo.setCurrentText("modern")
+        self._configure_combo(self.optimization_mode_combo)
+        self.optimization_profile_combo = QComboBox()
+        self.optimization_profile_combo.setObjectName("optimizationProfileCombo")
+        self.optimization_profile_combo.addItems(("scipy_de", "ga_compat"))
+        self._configure_combo(self.optimization_profile_combo)
+        self.optimization_seed = self._integer("optimizationSeedInput", 0, 2147483647, 0)
+        self.optimization_time_limit = self._double(
+            "optimizationTimeLimitInput", 0.0, 86400.0, 0.0, " s"
+        )
+        self.optimization_sum_count = self._integer(
+            "optimizationSumCountInput", 0, 1024, 0
+        )
+        self.optimization_max_sum = self._double(
+            "optimizationMaxSumInput", 0.0, 1000000.0, 0.0, ""
+        )
+        self.optimization_integer_indices = QComboBox()
+        self.optimization_integer_indices.setObjectName("optimizationIntegerIndicesCombo")
+        self.optimization_integer_indices.setEditable(True)
+        self.optimization_integer_indices.addItems(("", "0", "0,1"))
+        self.optimization_integer_indices.setToolTip(
+            "Zero-based comma-separated parameter indices constrained to integers."
+        )
+        self._configure_combo(self.optimization_integer_indices)
+        self.optimization_checkpoint = QComboBox()
+        self.optimization_checkpoint.setObjectName("optimizationCheckpointCombo")
+        self.optimization_checkpoint.setEditable(True)
+        self.optimization_checkpoint.addItem("")
+        self.optimization_checkpoint.setToolTip(
+            "Optional JSON checkpoint path. A completed run writes this file."
+        )
+        self._configure_combo(self.optimization_checkpoint)
+        self.optimization_resume = QCheckBox("Resume from checkpoint")
+        self.optimization_resume.setObjectName("optimizationResumeCheck")
         form.addRow("Objective", self.optimization_objective)
+        form.addRow("Compatibility", self.optimization_mode_combo)
+        form.addRow("Profile", self.optimization_profile_combo)
         form.addRow("Generations", self.optimization_generations)
         form.addRow("Population", self.optimization_population)
+        form.addRow("Seed", self.optimization_seed)
+        form.addRow("Time limit (0 = off)", self.optimization_time_limit)
+        form.addRow("Sum first N", self.optimization_sum_count)
+        form.addRow("Maximum sum", self.optimization_max_sum)
+        form.addRow("Integer indices", self.optimization_integer_indices)
+        form.addRow("Checkpoint", self.optimization_checkpoint)
+        form.addRow("Continuation", self.optimization_resume)
         controls.layout().addLayout(form)
         self.optimization_bounds_table = QTableWidget(3, 3)
         self.optimization_bounds_table.setObjectName("optimizationBoundsTable")
@@ -1743,9 +2349,26 @@ class MainWindow(QMainWindow):
             ("manual legacy", "material legacy", "material corrected")
         )
         self._configure_combo(self.fdfd_palette_combo)
+        self.fdfd_polarization_combo = QComboBox()
+        self.fdfd_polarization_combo.setObjectName("fdfdPolarizationCombo")
+        self.fdfd_polarization_combo.addItems(("Selected mode", "Both E + H"))
+        self._configure_combo(self.fdfd_polarization_combo)
+        self.fdfd_geometry_combo = QComboBox()
+        self.fdfd_geometry_combo.setObjectName("fdfdGeometryCombo")
+        self.fdfd_geometry_combo.addItems(("1D interface", "Selected PhC"))
+        self._configure_combo(self.fdfd_geometry_combo)
         self.fdfd_field_combo = QComboBox()
         self.fdfd_field_combo.setObjectName("fdfdFieldCombo")
-        self.fdfd_field_combo.addItems(("abs(f)", "real(f)", "ER2"))
+        self.fdfd_field_combo.addItems(
+            (
+                "abs(f)",
+                "real(f)",
+                "imag(f)",
+                "phase(f)",
+                "log10(abs(f))",
+                "ER2 + contours",
+            )
+        )
         self._configure_combo(self.fdfd_field_combo)
         self.fdfd_nres = self._double("fdfdNresInput", 1.0, 200.0, 20.0, "")
         self.fdfd_period_num = self._integer("fdfdPeriodNumInput", 1, 101, 11)
@@ -1759,6 +2382,8 @@ class MainWindow(QMainWindow):
         )
         form.addRow("Interface", self.fdfd_interface_combo)
         form.addRow("Palette", self.fdfd_palette_combo)
+        form.addRow("Polarizations", self.fdfd_polarization_combo)
+        form.addRow("Geometry", self.fdfd_geometry_combo)
         form.addRow("Field view", self.fdfd_field_combo)
         form.addRow("NRES", self.fdfd_nres)
         form.addRow("Period num", self.fdfd_period_num)
@@ -1784,9 +2409,14 @@ class MainWindow(QMainWindow):
         self.fdfd_status.setWordWrap(True)
         preview.layout().addWidget(self.fdfd_status)
         self.field_plot = PlotPreview(
-            "fieldPlotPreview", "Field result canvas", "x", "z"
+            "fieldPlotPreview", "E / selected field", "x", "z"
         )
         preview.layout().addWidget(self.field_plot)
+        self.field_plot_h = PlotPreview(
+            "fieldPlotHPreview", "H field", "x", "z"
+        )
+        self.field_plot_h.setVisible(False)
+        preview.layout().addWidget(self.field_plot_h)
         preview.layout().setAlignment(Qt.AlignmentFlag.AlignTop)
         row.addWidget(preview, 2)
         page.layout().addLayout(row, 1)
@@ -1800,14 +2430,32 @@ class MainWindow(QMainWindow):
         selector_row = QHBoxLayout()
         self.result_family_combo = QComboBox()
         self.result_family_combo.setObjectName("resultFamilyCombo")
-        self.result_family_combo.addItems(("Transmission", "Reflection", "Energy"))
+        self.result_family_combo.addItems(
+            ("Transmission", "Reflection", "Energy", "Energy error")
+        )
         self._configure_combo(self.result_family_combo)
         self.result_order_combo = QComboBox()
         self.result_order_combo.setObjectName("resultOrderCombo")
-        self.result_order_combo.addItems(("-1", "0", "+1", "sum"))
+        self.result_order_combo.addItems(("-2", "-1", "0", "+1", "+2", "sum"))
+        self.result_order_combo.setCurrentText("0")
         self._configure_combo(self.result_order_combo)
+        self.result_view_combo = QComboBox()
+        self.result_view_combo.setObjectName("resultViewCombo")
+        self.result_view_combo.addItems(
+            (
+                "Auto",
+                "Wavelength start",
+                "Wavelength middle",
+                "Wavelength end",
+                "Angle start",
+                "Angle middle",
+                "Angle end",
+            )
+        )
+        self._configure_combo(self.result_view_combo)
         selector_row.addWidget(self.result_family_combo)
         selector_row.addWidget(self.result_order_combo)
+        selector_row.addWidget(self.result_view_combo)
         results_card.layout().addLayout(selector_row)
         self.results_text = QTextEdit()
         self.results_text.setObjectName("resultsText")
@@ -1849,12 +2497,10 @@ class MainWindow(QMainWindow):
     def _fit_project_stack_table_header(self, table: QTableWidget) -> None:
         table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         header = table.horizontalHeader()
-        for column in range(3):
-            header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        header.setStretchLastSection(True)
-        padding = 26
-        for column in range(3):
+        header.setStretchLastSection(False)
+        padding = 18
+        for column in range(table.columnCount()):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
             item = table.horizontalHeaderItem(column)
             label = "" if item is None else item.text()
             header.resizeSection(
@@ -2029,6 +2675,18 @@ class MainWindow(QMainWindow):
         self.backend_combo.currentTextChanged.connect(
             lambda _value: self._update_project_status()
         )
+        self.backend_combo.currentTextChanged.connect(
+            lambda _value: self._on_inputs_changed()
+        )
+        self.compatibility_mode_combo.currentTextChanged.connect(
+            lambda _value: self._on_inputs_changed()
+        )
+        self.compatibility_mode_combo.currentTextChanged.connect(
+            self.optimization_mode_combo.setCurrentText
+        )
+        self.external_command_combo.currentTextChanged.connect(
+            lambda _value: self._on_inputs_changed()
+        )
         self.project_name.currentTextChanged.connect(
             lambda _value: self._update_project_status()
         )
@@ -2077,6 +2735,14 @@ class MainWindow(QMainWindow):
         self.interface_combo.currentTextChanged.connect(
             lambda _value: self._on_inputs_changed()
         )
+        for checkbox in (
+            self.interface_smooth,
+            self.periodic_stack,
+            self.flat_substrate,
+            self.calc_fresnel,
+            self.optimization_resume,
+        ):
+            checkbox.toggled.connect(lambda _checked: self._on_inputs_changed())
         self.nx_input.valueChanged.connect(lambda _value: self._on_inputs_changed())
         self.nz_input.valueChanged.connect(lambda _value: self._on_inputs_changed())
         self.layer_table.itemChanged.connect(lambda _item: self._on_inputs_changed())
@@ -2086,15 +2752,29 @@ class MainWindow(QMainWindow):
         self.move_layer_down_button.clicked.connect(lambda: self.move_layer(1))
         for combo in (
             self.optimization_objective,
+            self.optimization_mode_combo,
+            self.optimization_profile_combo,
+            self.optimization_integer_indices,
+            self.optimization_checkpoint,
             self.fdfd_interface_combo,
             self.fdfd_palette_combo,
+            self.fdfd_polarization_combo,
+            self.fdfd_geometry_combo,
             self.phc_shape_combo,
             self.phc_repeat_combo,
+            self.rcwa_run_mode_combo,
         ):
             combo.currentTextChanged.connect(lambda _value: self._on_inputs_changed())
+        self.optimization_mode_combo.currentTextChanged.connect(
+            lambda _value: self._sync_optimization_bounds_for_source()
+        )
         for spinbox in (
             self.optimization_generations,
             self.optimization_population,
+            self.optimization_seed,
+            self.optimization_time_limit,
+            self.optimization_sum_count,
+            self.optimization_max_sum,
             self.fdfd_nres,
             self.fdfd_period_num,
             self.fdfd_npml_x,
@@ -2111,6 +2791,16 @@ class MainWindow(QMainWindow):
             self.phc_ax,
             self.phc_ay,
             self.phc_radius,
+            self.trapz_bottom,
+            self.trapz_top,
+            self.supergauss_sigma,
+            self.supergauss_m,
+            self.triangle_w1,
+            self.triangle_w2,
+            self.triangle_w3,
+            self.periodic_count,
+            self.convergence_max_harmonics,
+            self.convergence_tolerance,
         ):
             spinbox.valueChanged.connect(lambda _value: self._on_inputs_changed())
         self.optimization_bounds_table.itemChanged.connect(
@@ -2120,6 +2810,9 @@ class MainWindow(QMainWindow):
             lambda _value: self._update_result_plot()
         )
         self.result_order_combo.currentTextChanged.connect(
+            lambda _value: self._update_result_plot()
+        )
+        self.result_view_combo.currentTextChanged.connect(
             lambda _value: self._update_result_plot()
         )
         self.fdfd_field_combo.currentTextChanged.connect(
@@ -2137,17 +2830,34 @@ class MainWindow(QMainWindow):
         return ShellInputs(
             project_name=self.project_name.currentText().strip(),
             backend=self.backend_combo.currentText(),
+            compatibility_mode=self.compatibility_mode_combo.currentText(),
+            external_command=self.external_command_combo.currentText().strip(),
             workflow=self._active_workflow(),
             source_mode=self.source_combo.currentText(),
             import_path=None if self._import_path is None else str(self._import_path),
             imported_device=self._imported_device,
             matrix_method=self.method_combo.currentText(),
             interface=self.interface_combo.currentText(),
+            interface_smooth=self.interface_smooth.isChecked(),
+            trapz_w_bot=self.trapz_bottom.value(),
+            trapz_w_top=self.trapz_top.value(),
+            supergauss_sigma=self.supergauss_sigma.value(),
+            supergauss_m=self.supergauss_m.value(),
+            triangle_w1=self.triangle_w1.value(),
+            triangle_w2=self.triangle_w2.value(),
+            triangle_w3=self.triangle_w3.value(),
             polarization=self.mode_combo.currentText(),
             distribution=self.distribution_combo.currentText(),
             period_um=self.period_um.value(),
             height_um=self.height_um.value(),
             harmonics=self.harmonics.value(),
+            rcwa_run_mode=self.rcwa_run_mode_combo.currentText(),
+            convergence_max_harmonics=self.convergence_max_harmonics.value(),
+            convergence_tolerance=self.convergence_tolerance.value(),
+            is_periodic=self.periodic_stack.isChecked(),
+            period_num=self.periodic_count.value(),
+            flat_substrate=self.flat_substrate.isChecked(),
+            calc_fresnel=self.calc_fresnel.isChecked(),
             layer_count=self.layer_table.rowCount(),
             n_superstrate=self.n_superstrate.value(),
             n_substrate=self.n_substrate.value(),
@@ -2161,13 +2871,27 @@ class MainWindow(QMainWindow):
             params=params,
             result_family=self.result_family_combo.currentText(),
             result_order=self.result_order_combo.currentText(),
+            result_view=self.result_view_combo.currentText(),
             optimization_objective=self.optimization_objective.currentText(),
+            optimization_mode=self.optimization_mode_combo.currentText(),
+            optimization_profile=self.optimization_profile_combo.currentText(),
             optimization_lower_bounds=self._optimization_bounds(1),
             optimization_upper_bounds=self._optimization_bounds(2),
             optimization_generations=self.optimization_generations.value(),
             optimization_population=self.optimization_population.value(),
+            optimization_seed=self.optimization_seed.value(),
+            optimization_time_limit_s=self.optimization_time_limit.value(),
+            optimization_sum_limit_count=self.optimization_sum_count.value(),
+            optimization_max_sum=self.optimization_max_sum.value(),
+            optimization_integer_indices=self._parse_integer_indices(
+                self.optimization_integer_indices.currentText()
+            ),
+            optimization_checkpoint_path=self.optimization_checkpoint.currentText().strip(),
+            optimization_resume=self.optimization_resume.isChecked(),
             fdfd_interface=self.fdfd_interface_combo.currentText(),
             fdfd_palette=self.fdfd_palette_combo.currentText(),
+            fdfd_polarization_mode=self.fdfd_polarization_combo.currentText(),
+            fdfd_geometry_mode=self.fdfd_geometry_combo.currentText(),
             fdfd_nres=self.fdfd_nres.value(),
             fdfd_period_num=self.fdfd_period_num.value(),
             fdfd_npml=(self.fdfd_npml_x.value(), self.fdfd_npml_y.value()),
@@ -2201,6 +2925,12 @@ class MainWindow(QMainWindow):
             return "fdfd"
         if (
             current == "RCWA Sweep"
+            and hasattr(self, "rcwa_run_mode_combo")
+            and self.rcwa_run_mode_combo.currentText() == "Harmonic convergence"
+        ):
+            return "convergence"
+        if (
+            current == "RCWA Sweep"
             and hasattr(self, "phc_shape_combo")
             and self.phc_shape_combo.currentText() != "1D Analytic/Import"
         ):
@@ -2215,6 +2945,22 @@ class MainWindow(QMainWindow):
                 raise ValueError("optimization bounds table contains empty cells")
             values.append(float(item.text()))
         return tuple(values)
+
+    def _parse_integer_indices(self, value: str) -> tuple[int, ...]:
+        text = value.strip()
+        if not text:
+            return ()
+        try:
+            indices = tuple(int(token.strip()) for token in text.split(","))
+        except ValueError as exc:
+            raise ValueError(
+                "Optimization integer indices must be comma-separated integers."
+            ) from exc
+        if any(index < 0 for index in indices) or len(set(indices)) != len(indices):
+            raise ValueError(
+                "Optimization integer indices must be unique non-negative integers."
+            )
+        return indices
 
     def validate_inputs(self) -> None:
         inputs = self.collect_inputs()
@@ -2266,12 +3012,18 @@ class MainWindow(QMainWindow):
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.progress.connect(self._on_run_progress)
+        self._worker.optimization_progress.connect(self._on_optimization_progress)
         self._worker.finished.connect(self._on_run_finished)
         self._worker.failed.connect(self._on_run_failed)
         self._worker.cancelled.connect(self._on_run_cancelled)
         self._worker.finished.connect(self._thread.quit)
         self._worker.failed.connect(self._thread.quit)
         self._worker.cancelled.connect(self._thread.quit)
+        self._optimization_history = []
+        if inputs.workflow == "optimization":
+            self.optimize_plot.clear_results()
+            self.optimize_plot.set_axis_labels("generation", "fitness")
+            self.optimization_status.setText("Waiting for the first merit sample…")
         self._thread.finished.connect(self._on_thread_finished)
         self._thread.finished.connect(self._worker.deleteLater)
         self._thread.finished.connect(self._thread.deleteLater)
@@ -2374,6 +3126,7 @@ class MainWindow(QMainWindow):
         )
         self._import_path = source
         self.source_combo.setCurrentText("Import")
+        self._sync_optimization_bounds_for_source()
         self._append_log(f"Loaded imported device: {source}")
         self._on_inputs_changed()
         return source
@@ -2393,15 +3146,32 @@ class MainWindow(QMainWindow):
         ]
         return {
             "backend": inputs.backend,
+            "compatibility_mode": inputs.compatibility_mode,
+            "external_command": inputs.external_command,
             "source_mode": inputs.source_mode,
             "import_path": inputs.import_path,
             "matrix_method": inputs.matrix_method,
             "interface": inputs.interface,
+            "interface_smooth": inputs.interface_smooth,
+            "trapz_w_bot": inputs.trapz_w_bot,
+            "trapz_w_top": inputs.trapz_w_top,
+            "supergauss_sigma": inputs.supergauss_sigma,
+            "supergauss_m": inputs.supergauss_m,
+            "triangle_w1": inputs.triangle_w1,
+            "triangle_w2": inputs.triangle_w2,
+            "triangle_w3": inputs.triangle_w3,
             "polarization": inputs.polarization,
             "distribution": inputs.distribution,
             "period_um": inputs.period_um,
             "height_um": inputs.height_um,
             "harmonics": inputs.harmonics,
+            "rcwa_run_mode": inputs.rcwa_run_mode,
+            "convergence_max_harmonics": inputs.convergence_max_harmonics,
+            "convergence_tolerance": inputs.convergence_tolerance,
+            "is_periodic": inputs.is_periodic,
+            "period_num": inputs.period_num,
+            "flat_substrate": inputs.flat_substrate,
+            "calc_fresnel": inputs.calc_fresnel,
             "n_superstrate": inputs.n_superstrate,
             "n_substrate": inputs.n_substrate,
             "wavelength_start_nm": inputs.wavelength_start_nm,
@@ -2413,13 +3183,25 @@ class MainWindow(QMainWindow):
             "nz": inputs.nz,
             "result_family": inputs.result_family,
             "result_order": inputs.result_order,
+            "result_view": inputs.result_view,
             "optimization_objective": inputs.optimization_objective,
+            "optimization_mode": inputs.optimization_mode,
+            "optimization_profile": inputs.optimization_profile,
             "optimization_lower_bounds": list(inputs.optimization_lower_bounds),
             "optimization_upper_bounds": list(inputs.optimization_upper_bounds),
             "optimization_generations": inputs.optimization_generations,
             "optimization_population": inputs.optimization_population,
+            "optimization_seed": inputs.optimization_seed,
+            "optimization_time_limit_s": inputs.optimization_time_limit_s,
+            "optimization_sum_limit_count": inputs.optimization_sum_limit_count,
+            "optimization_max_sum": inputs.optimization_max_sum,
+            "optimization_integer_indices": list(inputs.optimization_integer_indices),
+            "optimization_checkpoint_path": inputs.optimization_checkpoint_path,
+            "optimization_resume": inputs.optimization_resume,
             "fdfd_interface": inputs.fdfd_interface,
             "fdfd_palette": inputs.fdfd_palette,
+            "fdfd_polarization_mode": inputs.fdfd_polarization_mode,
+            "fdfd_geometry_mode": inputs.fdfd_geometry_mode,
             "fdfd_nres": inputs.fdfd_nres,
             "fdfd_period_num": inputs.fdfd_period_num,
             "fdfd_npml": list(inputs.fdfd_npml),
@@ -2442,8 +3224,17 @@ class MainWindow(QMainWindow):
     def _apply_configuration(self, configuration: dict[str, object]) -> None:
         self._syncing_layers = True
         try:
+            backend = str(configuration.get("backend", "Local Python"))
+            if backend == "External solver":
+                backend = "External CLI"
             self.backend_combo.setCurrentText(
-                str(configuration.get("backend", "Local Python"))
+                backend
+            )
+            self.compatibility_mode_combo.setCurrentText(
+                str(configuration.get("compatibility_mode", "modern"))
+            )
+            self.external_command_combo.setCurrentText(
+                str(configuration.get("external_command", ""))
             )
             self.source_combo.setCurrentText(
                 str(configuration.get("source_mode", "Analytic"))
@@ -2454,6 +3245,18 @@ class MainWindow(QMainWindow):
             self.interface_combo.setCurrentText(
                 str(configuration.get("interface", "sin"))
             )
+            self.interface_smooth.setChecked(
+                bool(configuration.get("interface_smooth", False))
+            )
+            self.trapz_bottom.setValue(float(configuration.get("trapz_w_bot", 0.195)))
+            self.trapz_top.setValue(float(configuration.get("trapz_w_top", 0.375)))
+            self.supergauss_sigma.setValue(
+                float(configuration.get("supergauss_sigma", 0.30615 / 2.355))
+            )
+            self.supergauss_m.setValue(float(configuration.get("supergauss_m", 2.0)))
+            self.triangle_w1.setValue(float(configuration.get("triangle_w1", 0.25)))
+            self.triangle_w2.setValue(float(configuration.get("triangle_w2", 0.3)))
+            self.triangle_w3.setValue(float(configuration.get("triangle_w3", 0.1)))
             self.mode_combo.setCurrentText(str(configuration.get("polarization", "E")))
             self.distribution_combo.setCurrentText(
                 str(configuration.get("distribution", "all"))
@@ -2461,6 +3264,21 @@ class MainWindow(QMainWindow):
             self.period_um.setValue(float(configuration.get("period_um", 0.32)))
             self.height_um.setValue(float(configuration.get("height_um", 0.154)))
             self.harmonics.setValue(int(configuration.get("harmonics", 2)))
+            self.rcwa_run_mode_combo.setCurrentText(
+                str(configuration.get("rcwa_run_mode", "Sweep"))
+            )
+            self.convergence_max_harmonics.setValue(
+                int(configuration.get("convergence_max_harmonics", 12))
+            )
+            self.convergence_tolerance.setValue(
+                float(configuration.get("convergence_tolerance", 1e-4))
+            )
+            self.periodic_stack.setChecked(bool(configuration.get("is_periodic", False)))
+            self.periodic_count.setValue(int(configuration.get("period_num", 33)))
+            self.flat_substrate.setChecked(
+                bool(configuration.get("flat_substrate", False))
+            )
+            self.calc_fresnel.setChecked(bool(configuration.get("calc_fresnel", False)))
             self.n_superstrate.setValue(float(configuration.get("n_superstrate", 1.0)))
             self.n_substrate.setValue(float(configuration.get("n_substrate", 1.516)))
             self.wavelength_start_nm.setValue(
@@ -2484,14 +3302,46 @@ class MainWindow(QMainWindow):
             self.result_order_combo.setCurrentText(
                 str(configuration.get("result_order", "0"))
             )
+            self.result_view_combo.setCurrentText(
+                str(configuration.get("result_view", "Auto"))
+            )
             self.optimization_objective.setCurrentText(
                 str(configuration.get("optimization_objective", "R(+1)"))
+            )
+            self.optimization_mode_combo.setCurrentText(
+                str(configuration.get("optimization_mode", "modern"))
+            )
+            self.optimization_profile_combo.setCurrentText(
+                str(configuration.get("optimization_profile", "scipy_de"))
             )
             self.optimization_generations.setValue(
                 int(configuration.get("optimization_generations", 100))
             )
             self.optimization_population.setValue(
                 int(configuration.get("optimization_population", 15))
+            )
+            self.optimization_seed.setValue(
+                int(configuration.get("optimization_seed", 0))
+            )
+            self.optimization_time_limit.setValue(
+                float(configuration.get("optimization_time_limit_s", 0.0))
+            )
+            self.optimization_sum_count.setValue(
+                int(configuration.get("optimization_sum_limit_count", 0))
+            )
+            self.optimization_max_sum.setValue(
+                float(configuration.get("optimization_max_sum", 0.0))
+            )
+            integer_indices = configuration.get("optimization_integer_indices", ())
+            if isinstance(integer_indices, list | tuple):
+                self.optimization_integer_indices.setCurrentText(
+                    ",".join(str(index) for index in integer_indices)
+                )
+            self.optimization_checkpoint.setCurrentText(
+                str(configuration.get("optimization_checkpoint_path", ""))
+            )
+            self.optimization_resume.setChecked(
+                bool(configuration.get("optimization_resume", False))
             )
             self._apply_optimization_bounds(
                 configuration.get("optimization_lower_bounds", ()),
@@ -2502,6 +3352,12 @@ class MainWindow(QMainWindow):
             )
             self.fdfd_palette_combo.setCurrentText(
                 str(configuration.get("fdfd_palette", "manual legacy"))
+            )
+            self.fdfd_polarization_combo.setCurrentText(
+                str(configuration.get("fdfd_polarization_mode", "Selected mode"))
+            )
+            self.fdfd_geometry_combo.setCurrentText(
+                str(configuration.get("fdfd_geometry_mode", "1D interface"))
             )
             self.fdfd_nres.setValue(float(configuration.get("fdfd_nres", 20.0)))
             self.fdfd_period_num.setValue(int(configuration.get("fdfd_period_num", 11)))
@@ -2550,7 +3406,13 @@ class MainWindow(QMainWindow):
         if inputs.workflow == "optimization":
             return "optimization"
         if inputs.workflow == "fdfd":
-            return "fdfd_fields"
+            return (
+                "phc_fdfd_fields"
+                if inputs.fdfd_geometry_mode == "Selected PhC"
+                else "fdfd_fields"
+            )
+        if inputs.workflow == "convergence":
+            return "harmonic_convergence"
         if inputs.workflow == "phc":
             return "casual_phc_rcwa"
         if inputs.source_mode == "Import":
@@ -2558,6 +3420,10 @@ class MainWindow(QMainWindow):
         return "casual_rcwa"
 
     def _select_project_workflow(self, workflow: str) -> None:
+        if workflow == "harmonic_convergence":
+            self.rcwa_run_mode_combo.setCurrentText("Harmonic convergence")
+        if workflow == "phc_fdfd_fields":
+            self.fdfd_geometry_combo.setCurrentText("Selected PhC")
         page = PROJECT_WORKFLOW_PAGES.get(workflow, "Project")
         for index in range(self.nav_list.count()):
             item = self.nav_list.item(index)
@@ -2605,16 +3471,48 @@ class MainWindow(QMainWindow):
         self.optimization_bounds_table.blockSignals(True)
         try:
             if self.source_combo.currentText() == "Import":
-                if self.optimization_bounds_table.rowCount() < 4:
-                    row = self.optimization_bounds_table.rowCount()
-                    self.optimization_bounds_table.insertRow(row)
-                    for column, value in enumerate(("sub_L3_um", "0.04", "0.12")):
+                if self.optimization_mode_combo.currentText() == "modern":
+                    thicknesses = (
+                        np.asarray(self._imported_device.sub_L_um, dtype=np.float64)
+                        if self._imported_device is not None
+                        else np.asarray([], dtype=np.float64)
+                    )
+                    self.optimization_bounds_table.setRowCount(thicknesses.size)
+                    for row, thickness in enumerate(thicknesses):
+                        values = (
+                            f"sub_L{row + 1}_um",
+                            f"{max(float(thickness) * 0.5, 0.0001):.6g}",
+                            f"{float(thickness) * 1.5:.6g}",
+                        )
+                        for column, value in enumerate(values):
+                            self.optimization_bounds_table.setItem(
+                                row, column, QTableWidgetItem(value)
+                            )
+                    return
+                legacy_rows = (
+                    ("period_um", "0.6", "5"),
+                    ("sub_L1_um", "0.04", "0.12"),
+                    ("sub_L2_um", "0.04", "0.12"),
+                    ("sub_L3_um", "0.04", "0.12"),
+                )
+                self.optimization_bounds_table.setRowCount(len(legacy_rows))
+                for row, values in enumerate(legacy_rows):
+                    for column, value in enumerate(values):
                         self.optimization_bounds_table.setItem(
                             row, column, QTableWidgetItem(value)
                         )
                 return
-            if self.optimization_bounds_table.rowCount() > 3:
-                self.optimization_bounds_table.setRowCount(3)
+            analytic_rows = (
+                ("period_um", "0.6", "5"),
+                ("height_um", "0.01", "0.5"),
+                ("first_thickness_um", "0.2", "1"),
+            )
+            self.optimization_bounds_table.setRowCount(len(analytic_rows))
+            for row, values in enumerate(analytic_rows):
+                for column, value in enumerate(values):
+                    self.optimization_bounds_table.setItem(
+                        row, column, QTableWidgetItem(value)
+                    )
         finally:
             self.optimization_bounds_table.blockSignals(False)
 
@@ -2639,21 +3537,75 @@ class MainWindow(QMainWindow):
         if self._last_run is None or self._last_inputs is None:
             raise RuntimeError("no computed results to export")
         exported = self._service.export(self._last_run, self._last_inputs, destination)
+        self._export_plot_assets(exported)
         self._append_log(f"Exported result bundle: {exported}")
         self._set_backend_status(self.backend_combo.currentText(), "Exported")
         return exported
+
+    def _export_plot_assets(self, destination: Path) -> None:
+        plots = {
+            "Project_result": self.dashboard_plot,
+            "Sweep_result": self.sweep_plot,
+            "Selected_result": self.results_plot,
+            "FDFD_E_or_selected": self.field_plot,
+            "FDFD_H": self.field_plot_h,
+            "Optimization_history": self.optimize_plot,
+        }
+        for name, widget in plots.items():
+            if not widget.isVisible() and widget is self.field_plot_h:
+                continue
+            png_path = destination / f"{name}.png"
+            if not widget.grab().save(str(png_path), "PNG"):
+                raise OSError(f"failed to write plot image: {png_path}")
+            svg_path = destination / f"{name}.svg"
+            generator = QSvgGenerator()
+            generator.setFileName(str(svg_path))
+            generator.setSize(widget.size())
+            generator.setViewBox(widget.rect())
+            generator.setTitle(name.replace("_", " "))
+            generator.setDescription("ZenScat deterministic plot export")
+            widget.render(generator)
 
     def _on_run_progress(self, completed: int, total: int) -> None:
         self._set_backend_status(
             self.backend_combo.currentText(), f"Running {completed}/{total}"
         )
 
+    def _on_optimization_progress(self, snapshot: object) -> None:
+        progress_snapshot = cast(Any, snapshot)
+        best_fitness = float(progress_snapshot.best_fitness)
+        if not np.isfinite(best_fitness):
+            return
+        current_fitness = float(
+            getattr(progress_snapshot, "current_fitness", best_fitness)
+        )
+        self._optimization_history.append(best_fitness)
+        self.optimize_plot.set_axis_labels("generation", "fitness")
+        self.optimize_plot.set_series(
+            np.asarray(self._optimization_history, dtype=np.float64),
+            "best fitness (live)",
+        )
+        generation = int(progress_snapshot.generation)
+        evaluations = int(progress_snapshot.evaluations)
+        total = (
+            self._last_inputs.optimization_generations
+            if self._last_inputs is not None
+            else generation
+        )
+        self.optimization_status.setText(
+            f"Generation {generation}/{total}: current {current_fitness:.6g}, "
+            f"best {best_fitness:.6g}, {evaluations} evaluations."
+        )
+
     def _on_run_finished(self, run: object) -> None:
         self._last_run = run
-        if hasattr(run, "fdfd_bundle"):
+        if hasattr(run, "fdfd_bundle") or hasattr(run, "fdfd_bundles"):
             self._show_fdfd_result(run)
-        elif hasattr(run, "final_run"):
+        elif hasattr(run, "optimization"):
             self._show_optimization_result(run)
+            self._write_optimization_checkpoint(run)
+        elif hasattr(run, "samples") and hasattr(run, "final_run"):
+            self._show_convergence_result(run)
         else:
             self._show_rcwa_result(run)
         self.problems_text.setPlainText("No problems.")
@@ -2667,9 +3619,15 @@ class MainWindow(QMainWindow):
     def _show_rcwa_result(self, run: object) -> None:
         trn0 = np.asarray(run.transmission.TRN0, dtype=np.float64)
         ref0 = np.asarray(run.reflection.REF0, dtype=np.float64)
-        self.dashboard_plot.set_results(trn0, ref0)
-        self.sweep_plot.set_results(trn0, ref0)
-        self.results_plot.set_results(trn0, ref0)
+        if trn0.ndim == 2 and min(trn0.shape) > 1:
+            self.dashboard_plot.set_axis_labels("angle / deg", "wavelength / nm")
+            self.dashboard_plot.set_heatmap(trn0 + ref0, "TRN0 + REF0")
+            self.sweep_plot.set_axis_labels("angle / deg", "wavelength / nm")
+            self.sweep_plot.set_heatmap(trn0, "TRN0")
+        else:
+            self.dashboard_plot.set_results(trn0, ref0)
+            self.sweep_plot.set_results(trn0, ref0)
+        self._update_result_plot()
         workflow = run.metadata.get("workflow", self._last_inputs.workflow)
         if workflow == "casual_rcwa":
             workflow = "analytic RCWA"
@@ -2698,9 +3656,66 @@ class MainWindow(QMainWindow):
         )
         self._show_rcwa_result(run.final_run)
 
+    def _write_optimization_checkpoint(self, run: object) -> None:
+        if self._last_inputs is None:
+            return
+        destination_text = self._last_inputs.optimization_checkpoint_path.strip()
+        checkpoint = getattr(run.optimization, "checkpoint", None)
+        if not destination_text or checkpoint is None:
+            return
+        destination = Path(destination_text).expanduser().resolve()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(f".{destination.name}.tmp")
+        temporary.write_text(
+            json.dumps(checkpoint.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+            + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(destination)
+        self._append_log(f"Optimization checkpoint saved: {destination}")
+
+    def _show_convergence_result(self, run: object) -> None:
+        final = run.final_run
+        self._show_rcwa_result(final)
+        energy_error = np.asarray(
+            [sample.energy_error for sample in run.samples], dtype=np.float64
+        )
+        self.sweep_plot.set_series(energy_error, "harmonic energy error")
+        recommendation = (
+            str(run.recommended_harmonic_count)
+            if run.recommended_harmonic_count is not None
+            else "not reached"
+        )
+        self.results_text.setPlainText(
+            "Computed harmonic convergence\n"
+            f"Samples: {len(run.samples)}\n"
+            f"Recommended harmonics: {recommendation}\n"
+            f"Tolerance: {run.tolerance:g}\n"
+            f"Final energy error: {float(energy_error[-1]):.6g}"
+        )
+
     def _show_fdfd_result(self, run: object) -> None:
         self._update_field_plot(run)
         self._update_result_plot()
+        if hasattr(run, "electric") and hasattr(run, "magnetic"):
+            electric_field = np.asarray(run.electric.result.f)
+            magnetic_field = np.asarray(run.magnetic.result.f)
+            er2 = np.asarray(run.electric.device.ER2)
+            self.fdfd_status.setText(
+                f"Dual FDFD solved: E {electric_field.shape[0]}x{electric_field.shape[1]}, "
+                f"H {magnetic_field.shape[0]}x{magnetic_field.shape[1]}, "
+                f"ER2 {er2.shape[0]}x{er2.shape[1]}."
+            )
+            self.results_text.setPlainText(
+                "Computed dual-polarization FDFD fields\n"
+                f"E field shape: {electric_field.shape}\n"
+                f"H field shape: {magnetic_field.shape}\n"
+                f"E metrics: {self._fdfd_metric_summary(run.electric)}\n"
+                f"H metrics: {self._fdfd_metric_summary(run.magnetic)}\n"
+                f"ER2 shape: {er2.shape}\n"
+                f"Elapsed: {float(run.elapsed_s):.3f} s"
+            )
+            return
         field = np.asarray(run.result.f)
         er2 = np.asarray(run.device.ER2)
         self.fdfd_status.setText(
@@ -2711,7 +3726,25 @@ class MainWindow(QMainWindow):
             "Computed FDFD field results\n"
             f"Field shape: {field.shape}\n"
             f"ER2 shape: {er2.shape}\n"
+            f"Metrics: {self._fdfd_metric_summary(run)}\n"
             f"Elapsed: {float(run.elapsed_s):.3f} s"
+        )
+
+    def _fdfd_metric_summary(self, run: object) -> str:
+        transmission = np.asarray(
+            run.result.TRN.get("sum_grid", run.result.TRN.get("sum", 0.0)),
+            dtype=np.float64,
+        )
+        reflection = np.asarray(
+            run.result.REF.get("sum_grid", run.result.REF.get("sum", 0.0)),
+            dtype=np.float64,
+        )
+        t_mean = float(np.mean(transmission))
+        r_mean = float(np.mean(reflection))
+        absorption = 1.0 - t_mean - r_mean
+        return (
+            f"T {t_mean:.6g}, R {r_mean:.6g}, A {absorption:.6g}, "
+            f"{float(run.elapsed_s):.3f} s"
         )
 
     def _on_run_failed(self, message: str) -> None:
@@ -2721,6 +3754,7 @@ class MainWindow(QMainWindow):
         )
         self._append_log(f"Run failed: {message}")
         self._set_backend_status(self.backend_combo.currentText(), "Run failed")
+        self._retain_partial_optimization_status("Failed")
         self._update_live_metrics()
 
     def _on_run_cancelled(self) -> None:
@@ -2729,30 +3763,86 @@ class MainWindow(QMainWindow):
         )
         self._append_log("Run cancelled.")
         self._set_backend_status(self.backend_combo.currentText(), "Cancelled")
+        self._retain_partial_optimization_status("Cancelled")
         self._update_live_metrics()
+
+    def _retain_partial_optimization_status(self, outcome: str) -> None:
+        if not self._optimization_history:
+            return
+        detail = self.optimization_status.text().rstrip(".")
+        self.optimization_status.setText(
+            f"{outcome}; {detail}. Partial merit history retained."
+        )
 
     def _on_thread_finished(self) -> None:
         self._thread = None
         self._worker = None
         self._cancel_event = None
         self._set_running(False)
+        self._update_live_metrics()
+        self._refresh_context_inspector()
 
     def _update_result_plot(self) -> None:
         if not hasattr(self, "results_plot") or self._last_run is None:
             return
-        run = (
-            self._last_run.final_run
-            if hasattr(self._last_run, "final_run")
-            else self._last_run
-        )
+        run = self._primary_result_run(self._last_run)
         family = self.result_family_combo.currentText()
         order = self.result_order_combo.currentText()
         try:
-            values = self._selected_result_values(run, family, order)
-        except (AttributeError, KeyError, TypeError, ValueError):
+            from zenscat.result_views import build_result_view
+
+            if hasattr(run, "result"):
+                transmission = run.result.TRN
+                reflection = run.result.REF
+                wavelengths = run.wavelengths_um
+                wavelength_unit = "um"
+            else:
+                transmission = run.transmission
+                reflection = run.reflection
+                wavelengths = run.wavelengths_m
+                wavelength_unit = "m"
+            view = build_result_view(
+                transmission,
+                reflection,
+                wavelengths=wavelengths,
+                angles=run.angles_rad,
+                family=family,
+                order=order,
+                wavelength_unit=wavelength_unit,
+            )
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            self.results_plot.set_message(
+                f"Unavailable: {family} order {order} ({exc})"
+            )
             return
-        label = f"{family} {order}"
-        self.results_plot.set_series(values, label)
+        selection = self.result_view_combo.currentText()
+        if selection == "Auto":
+            if view.kind == "heatmap":
+                self.results_plot.set_axis_labels("angle / deg", "wavelength / nm")
+                self.results_plot.set_heatmap(view.values, view.label)
+            else:
+                self.results_plot.set_axis_labels("sweep point", view.label)
+                self.results_plot.set_series(view.values.ravel(), view.label)
+            return
+        direction, position = selection.lower().split(maxsplit=1)
+        position_index = {"start": 0, "middle": 1, "end": 2}[position]
+        slices = (
+            view.wavelength_slices if direction == "wavelength" else view.angle_slices
+        )
+        result_slice = slices[position_index]
+        self.results_plot.set_axis_labels(
+            f"{result_slice.x.label} / {result_slice.x.unit}", view.label
+        )
+        self.results_plot.set_series(result_slice.values, result_slice.label)
+
+    def _primary_result_run(self, run: object) -> object:
+        if hasattr(run, "optimization") and hasattr(run, "final_run"):
+            return run.final_run
+        if hasattr(run, "samples") and hasattr(run, "final_run"):
+            return run.final_run
+        if hasattr(run, "electric"):
+            return run.electric
+        return run
 
     def _selected_result_values(
         self, run: object, family: str, order: str
@@ -2775,16 +3865,51 @@ class MainWindow(QMainWindow):
         return self._rcwa_result(source, order)
 
     def _rcwa_result(self, result: object, order: str) -> np.ndarray:
-        name = {"-1": "minus_1", "0": "TRN0", "+1": "plus_1", "sum": "sum"}[order]
+        name = {
+            "-2": "minus_2",
+            "-1": "minus_1",
+            "0": "TRN0",
+            "+1": "plus_1",
+            "+2": "plus_2",
+            "sum": "sum",
+        }[order]
         if not hasattr(result, name):
-            name = {"-1": "minus_1", "0": "REF0", "+1": "plus_1", "sum": "sum"}[order]
+            name = {
+                "-2": "minus_2",
+                "-1": "minus_1",
+                "0": "REF0",
+                "+1": "plus_1",
+                "+2": "plus_2",
+                "sum": "sum",
+            }[order]
         return np.asarray(getattr(result, name), dtype=np.float64)
 
     def _dict_result(self, result: dict[str, object], order: str) -> np.ndarray:
         for key in (
-            {"-1": "minus_1", "0": "TRN0", "+1": "plus_1", "sum": "sum"}[order],
-            {"-1": "TRN_minus1", "0": "TRN0", "+1": "TRN_plus1", "sum": "sum"}[order],
-            {"-1": "REF_minus1", "0": "REF0", "+1": "REF_plus1", "sum": "sum"}[order],
+            {
+                "-2": "minus_2",
+                "-1": "minus_1",
+                "0": "TRN0",
+                "+1": "plus_1",
+                "+2": "plus_2",
+                "sum": "sum",
+            }[order],
+            {
+                "-2": "TRN_minus2",
+                "-1": "TRN_minus1",
+                "0": "TRN0",
+                "+1": "TRN_plus1",
+                "+2": "TRN_plus2",
+                "sum": "sum",
+            }[order],
+            {
+                "-2": "REF_minus2",
+                "-1": "REF_minus1",
+                "0": "REF0",
+                "+1": "REF_plus1",
+                "+2": "REF_plus2",
+                "sum": "sum",
+            }[order],
         ):
             if key in result:
                 return np.asarray(result[key], dtype=np.float64)
@@ -2794,16 +3919,57 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "field_plot"):
             return
         target = run or self._last_run
-        if target is None or not hasattr(target, "result"):
+        if target is None:
             return
-        view = self.fdfd_field_combo.currentText()
-        if view == "real(f)":
-            values = np.real(target.result.f)
-        elif view == "ER2":
-            values = target.device.ER2
-        else:
-            values = np.abs(target.result.f)
-        self.field_plot.set_heatmap(np.asarray(values), view)
+        runs = (
+            (target.electric, target.magnetic)
+            if hasattr(target, "electric") and hasattr(target, "magnetic")
+            else (target,)
+        )
+        if not all(hasattr(item, "result") for item in runs):
+            return
+        from zenscat.result_views import er2_edge_mask, field_transform
+
+        view_name = self.fdfd_field_combo.currentText()
+        transform = {
+            "abs(f)": "abs",
+            "real(f)": "real",
+            "imag(f)": "imag",
+            "phase(f)": "phase",
+            "log10(abs(f))": "log10abs",
+        }.get(view_name)
+        plots = (self.field_plot, self.field_plot_h)
+        for index, (item, plot) in enumerate(zip(runs, plots, strict=False)):
+            er2 = np.asarray(item.device.ER2, dtype=np.float64)
+            if transform is None:
+                plot.set_heatmap(
+                    er2,
+                    "ER2 + contours",
+                    contours=er2_edge_mask(er2),
+                )
+            else:
+                field_view = field_transform(
+                    item.result.f,
+                    transform,
+                )
+                contours = er2_edge_mask(er2)
+                if contours.shape != field_view.values.shape:
+                    row_indices = np.linspace(
+                        0, contours.shape[0] - 1, field_view.values.shape[0]
+                    ).astype(int)
+                    column_indices = np.linspace(
+                        0, contours.shape[1] - 1, field_view.values.shape[1]
+                    ).astype(int)
+                    contours = contours[np.ix_(row_indices, column_indices)]
+                plot.set_heatmap(
+                    field_view.values,
+                    field_view.label,
+                    contours=contours,
+                )
+            plot.setVisible(index == 0 or len(runs) == 2)
+        if len(runs) == 1:
+            self.field_plot_h.clear_results()
+            self.field_plot_h.setVisible(False)
 
     def _set_running(self, running: bool) -> None:
         self.validate_button.setEnabled(not running)
@@ -2832,7 +3998,10 @@ class MainWindow(QMainWindow):
             self.sweep_plot.clear_results()
             self.results_plot.clear_results()
             self.field_plot.clear_results()
+            self.field_plot_h.clear_results()
+            self.field_plot_h.setVisible(False)
             self.optimize_plot.clear_results()
+            self._optimization_history = []
         self.results_text.setPlainText(
             "No computed results. Validate the active workflow, then Run to "
             "populate the selected output view. Export unlocks after completion."
@@ -2995,7 +4164,7 @@ class MainWindow(QMainWindow):
                 thicknesses, indices, "imported device", **profile_kwargs
             )
             return
-        from zenscat.core import sample_interface_profile
+        from zenscat.core import InterfaceParams, sample_interface_profile
 
         layer_count = max(inputs.layer_count, 1)
         thicknesses = np.asarray(inputs.params[:layer_count], dtype=np.float64)
@@ -3005,6 +4174,16 @@ class MainWindow(QMainWindow):
             period_um=inputs.period_um,
             height_um=inputs.height_um,
             sample_count=256,
+            interface_params=InterfaceParams(
+                smooth=inputs.interface_smooth,
+                trapz_w_bot=inputs.trapz_w_bot,
+                trapz_w_top=inputs.trapz_w_top,
+                supergauss_sigma=inputs.supergauss_sigma,
+                supergauss_m=inputs.supergauss_m,
+                triangle_w1=inputs.triangle_w1,
+                triangle_w2=inputs.triangle_w2,
+                triangle_w3=inputs.triangle_w3,
+            ),
         )
         profile_kwargs = {
             "x_um": x_um,
@@ -3167,6 +4346,7 @@ class MainWindow(QMainWindow):
             f"Section: {current}\n"
             f"Project: {inputs.project_name or 'Untitled'}\n"
             f"Backend: {inputs.backend}\n"
+            f"Compatibility: {inputs.compatibility_mode}\n"
             f"Source: {source}\n"
         )
         if current == "RCWA Sweep":
@@ -3184,6 +4364,8 @@ class MainWindow(QMainWindow):
                 f"{inputs.interface} ({interface_description}), "
                 f"{inputs.distribution}\n"
                 f"Grid: {inputs.harmonics} harmonics, Nx {inputs.nx}, Nz {inputs.nz}\n"
+                f"Run mode: {inputs.rcwa_run_mode}; convergence max/tol "
+                f"{inputs.convergence_max_harmonics}/{inputs.convergence_tolerance:g}\n"
                 f"Sweep: {sweep}, {angles}, {inputs.sweep_points} points\n\n"
                 "Validate builds the analytic or imported RCWA request. Run computes "
                 "TRN/REF orders on the worker thread; Export writes the legacy bundle."
@@ -3191,6 +4373,8 @@ class MainWindow(QMainWindow):
         if current == "Optimize":
             return (
                 header + f"Objective: {inputs.optimization_objective}\n"
+                f"Compatibility/profile: {inputs.optimization_mode}/"
+                f"{inputs.optimization_profile}; seed {inputs.optimization_seed}\n"
                 f"Generations/population: {inputs.optimization_generations}/"
                 f"{inputs.optimization_population}\n"
                 f"Bounds lower: {list(inputs.optimization_lower_bounds)}\n"
@@ -3203,7 +4387,7 @@ class MainWindow(QMainWindow):
             return (
                 header + f"FDFD: {inputs.fdfd_interface} "
                 f"({fdfd_interface_description}), {inputs.fdfd_palette}, "
-                f"{inputs.polarization} mode\n"
+                f"{inputs.fdfd_polarization_mode}, {inputs.fdfd_geometry_mode}\n"
                 f"Domain: period {self._format_number(inputs.period_um)} um, "
                 f"height {self._format_number(inputs.height_um)} um, "
                 f"NRES {self._format_number(inputs.fdfd_nres)}, "
@@ -3218,7 +4402,8 @@ class MainWindow(QMainWindow):
             status = "available" if self._last_run is not None else "empty"
             return (
                 header + f"Results: {status}\n"
-                f"Selector: {inputs.result_family} {inputs.result_order}\n\n"
+                f"Selector: {inputs.result_family} {inputs.result_order}, "
+                f"{inputs.result_view}\n\n"
                 "After a run, use the selectors to plot transmission, reflection, "
                 "or energy for -1/0/+1/sum. Export is enabled only when computed "
                 "results are present."

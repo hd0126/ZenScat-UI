@@ -43,10 +43,14 @@ def launch_rcwa_t(
     sweep_shape = (grid.Lam0.size, grid.Theta.size)
     trn_minus_1 = np.zeros(sweep_shape, dtype=np.float64)
     trn_plus_1 = np.zeros(sweep_shape, dtype=np.float64)
+    trn_minus_2 = np.zeros(sweep_shape, dtype=np.float64) if harmonic_count >= 2 else None
+    trn_plus_2 = np.zeros(sweep_shape, dtype=np.float64) if harmonic_count >= 2 else None
     trn0 = np.zeros(sweep_shape, dtype=np.float64)
     trn_sum = np.zeros(sweep_shape, dtype=np.float64)
     ref_minus_1 = np.zeros(sweep_shape, dtype=np.float64)
     ref_plus_1 = np.zeros(sweep_shape, dtype=np.float64)
+    ref_minus_2 = np.zeros(sweep_shape, dtype=np.float64) if harmonic_count >= 2 else None
+    ref_plus_2 = np.zeros(sweep_shape, dtype=np.float64) if harmonic_count >= 2 else None
     ref0 = np.zeros(sweep_shape, dtype=np.float64)
     ref_sum = np.zeros(sweep_shape, dtype=np.float64)
 
@@ -131,10 +135,16 @@ def launch_rcwa_t(
             center = size // 2
             ref_minus_1[lam_index, theta_index] = r[center - 1]
             ref_plus_1[lam_index, theta_index] = r[center + 1]
+            if ref_minus_2 is not None and ref_plus_2 is not None:
+                ref_minus_2[lam_index, theta_index] = r[center - 2]
+                ref_plus_2[lam_index, theta_index] = r[center + 2]
             ref0[lam_index, theta_index] = r[center]
             ref_sum[lam_index, theta_index] = abs(np.sum(r))
             trn_minus_1[lam_index, theta_index] = t[center - 1]
             trn_plus_1[lam_index, theta_index] = t[center + 1]
+            if trn_minus_2 is not None and trn_plus_2 is not None:
+                trn_minus_2[lam_index, theta_index] = t[center - 2]
+                trn_plus_2[lam_index, theta_index] = t[center + 2]
             trn0[lam_index, theta_index] = t[center]
             trn_sum[lam_index, theta_index] = abs(np.sum(t))
             completed_points += 1
@@ -146,12 +156,16 @@ def launch_rcwa_t(
         plus_1=trn_plus_1,
         TRN0=trn0,
         sum=trn_sum,
+        minus_2=trn_minus_2,
+        plus_2=trn_plus_2,
     )
     ref = DiffractionResult(
         minus_1=ref_minus_1,
         plus_1=ref_plus_1,
         REF0=ref0,
         sum=ref_sum,
+        minus_2=ref_minus_2,
+        plus_2=ref_plus_2,
     )
     return trn, ref
 

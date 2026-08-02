@@ -1,6 +1,11 @@
 """Pure Python RCWA building blocks."""
 
-from .control import CancellationToken, ProgressCallback, SimulationCancelled
+from .control import (
+    CancellationToken,
+    ProgressCallback,
+    SimulationCancelled,
+    checkpoint,
+)
 from .device import (
     InterfaceParams,
     LegacyDevice,
@@ -29,6 +34,7 @@ from .phc import (
     build_phc_grid,
     launch_rcwa_s_phc,
 )
+from .phc_fdfd import PhCFDFDDevice, build_phc_fdfd_device
 from .rcwa1d import (
     Device1D,
     DiffractionResult,
@@ -59,6 +65,7 @@ __all__ = [
     "LegacyDevice",
     "LegacyGrid",
     "PhCDevice",
+    "PhCFDFDDevice",
     "PhCGrid",
     "PhCInterfaceParams",
     "ProgressCallback",
@@ -71,12 +78,14 @@ __all__ = [
     "build_legacy_device",
     "build_legacy_grid",
     "build_phc_device",
+    "build_phc_fdfd_device",
     "build_phc_grid",
     "calc_free_space",
     "calc_k",
     "calc_layer",
     "calc_reflection_side",
     "calc_transmission_side",
+    "checkpoint",
     "convmat1d",
     "dispersion_refractive_indices",
     "fdfd_2d",

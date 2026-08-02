@@ -120,6 +120,26 @@ def test_workflow_result_converts_to_legacy_export_contract() -> None:
     assert bundle.metadata["legacy_compatibility"] is True
 
 
+def test_rcwa_workflow_exposes_second_orders_when_harmonics_allow_them() -> None:
+    request = AnalyticRCWARequest(
+        params=[0.182, 0.120, 1.781, 1.650],
+        layer_num=2,
+        wavelengths_m=[510e-9],
+        angles_rad=[0.0],
+        harmonic_count=2,
+        Nx=64,
+        Nz=3,
+    )
+
+    run = run_analytic_rcwa(request)
+
+    assert run.transmission.minus_2 is not None
+    assert run.transmission.plus_2 is not None
+    assert run.reflection.minus_2 is not None
+    assert run.reflection.plus_2 is not None
+    assert run.transmission.minus_2.shape == (1, 1)
+
+
 @pytest.mark.parametrize("fixture_index", (0, 1))
 def test_fdfd_workflow_matches_matlab_end_to_end(fixture_index: int) -> None:
     payload = loadmat(

@@ -19,6 +19,8 @@ WORKFLOWS = {
     "optimization",
     "fdfd_fields",
     "casual_phc_rcwa",
+    "harmonic_convergence",
+    "phc_fdfd_fields",
 }
 
 

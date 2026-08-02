@@ -100,6 +100,112 @@ def test_result_bundle_round_trips_through_matlab_schema(tmp_path: Path) -> None
     assert loaded.metadata == {"polarization": "E", "solver": "S"}
 
 
+def test_result_bundle_compatibility_mode_writes_plot_ready_artifacts(tmp_path: Path) -> None:
+    wavelengths = np.array([500e-9, 510e-9])
+    angles = np.array([0.0, 0.1])
+    base = np.array([[0.1, 0.2], [0.3, 0.4]])
+    bundle = LegacyResultBundle(
+        wavelengths_m=wavelengths,
+        angles_rad=angles,
+        transmission=DiffractionResult(
+            minus_1=base,
+            plus_1=base + 0.01,
+            TRN0=base + 0.02,
+            sum=base + 0.03,
+        ),
+        reflection=DiffractionResult(
+            minus_1=base + 0.04,
+            plus_1=base + 0.05,
+            REF0=base + 0.06,
+            sum=base + 0.07,
+        ),
+        metadata={"solver": "S"},
+    )
+
+    destination = save_legacy_result_bundle(
+        tmp_path / "compat-result",
+        bundle,
+        compatibility_mode="legacy_exact",
+    )
+
+    data_txt = destination / "Data.txt"
+    plot_csv = destination / "RCWA_plot_data.csv"
+    axes_csv = destination / "RCWA_axes.csv"
+    assert data_txt.is_file()
+    assert plot_csv.is_file()
+    assert axes_csv.is_file()
+    assert "energy_error" in data_txt.read_text(encoding="utf-8").splitlines()[0]
+    plot_data = np.genfromtxt(plot_csv, delimiter=",", names=True)
+    assert plot_data.shape == (4,)
+    np.testing.assert_allclose(plot_data["wavelength_nm"], [500.0, 500.0, 510.0, 510.0])
+    np.testing.assert_allclose(plot_data["theta_deg"], [0.0, np.rad2deg(0.1), 0.0, np.rad2deg(0.1)])
+    np.testing.assert_allclose(
+        plot_data["energy_error"],
+        1.0 - (plot_data["TRN_sum"] + plot_data["REF_sum"]),
+    )
+    manifest = json.loads((destination / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["compatibility_mode"] == "legacy_exact"
+    assert {"Data.txt", "RCWA_plot_data.csv", "RCWA_axes.csv"}.issubset(manifest["files"])
+
+
+def test_result_bundle_rejects_unknown_compatibility_mode(tmp_path: Path) -> None:
+    empty = np.zeros((1, 1))
+    bundle = LegacyResultBundle(
+        wavelengths_m=np.array([500e-9]),
+        angles_rad=np.array([0.0]),
+        transmission=DiffractionResult(empty, empty, TRN0=empty, sum=empty),
+        reflection=DiffractionResult(empty, empty, REF0=empty, sum=empty),
+    )
+
+    with pytest.raises(ValueError, match="compatibility_mode"):
+        save_legacy_result_bundle(tmp_path / "bad-mode", bundle, compatibility_mode="unknown")  # type: ignore[arg-type]
+
+
+def test_legacy_result_loader_accepts_known_mat_aliases(tmp_path: Path) -> None:
+    from scipy.io import savemat
+
+    values = np.array([[0.1], [0.2]])
+    savemat(tmp_path / "Lam.mat", {"Lam": np.array([500e-9, 510e-9])})
+    savemat(tmp_path / "Theta.mat", {"theta": np.array([0.0])})
+    savemat(
+        tmp_path / "TRN.mat",
+        {"TRN": {"TRN_minus1": values, "TRN_plus1": values + 1, "zero": values + 2, "TRN_sum": values + 3}},
+    )
+    savemat(
+        tmp_path / "REF.mat",
+        {"REF": {"REF_minus1": values + 4, "REF_plus1": values + 5, "zero": values + 6, "REF_sum": values + 7}},
+    )
+    savemat(tmp_path / "Output.mat", {"params": np.array([1.0, 2.0])})
+
+    loaded = load_legacy_result_bundle(tmp_path)
+
+    np.testing.assert_array_equal(loaded.wavelengths_m, [500e-9, 510e-9])
+    np.testing.assert_array_equal(loaded.angles_rad, [0.0])
+    np.testing.assert_array_equal(loaded.transmission.minus_1, values)
+    np.testing.assert_array_equal(loaded.transmission.TRN0, values + 2)
+    np.testing.assert_array_equal(loaded.reflection.plus_1, values + 5)
+    np.testing.assert_array_equal(loaded.reflection.REF0, values + 6)
+    np.testing.assert_array_equal(loaded.params, [1.0, 2.0])
+
+
+def test_legacy_result_loader_strict_mode_rejects_missing_fields(tmp_path: Path) -> None:
+    from scipy.io import savemat
+
+    savemat(tmp_path / "Lam.mat", {"Lam0": np.array([500e-9])})
+    savemat(tmp_path / "Theta.mat", {"Theta": np.array([0.0])})
+    savemat(tmp_path / "TRN.mat", {"TRN": {"TRN0": np.array([[0.1]])}})
+    savemat(tmp_path / "REF.mat", {"REF": {"REF0": np.array([[0.2]])}})
+
+    with pytest.raises(ValueError, match="missing"):
+        load_legacy_result_bundle(tmp_path)
+
+    loaded = load_legacy_result_bundle(tmp_path, strict=False)
+    np.testing.assert_array_equal(loaded.transmission.TRN0, [[0.1]])
+    np.testing.assert_array_equal(loaded.transmission.sum, [[0.1]])
+    np.testing.assert_array_equal(loaded.reflection.REF0, [[0.2]])
+    np.testing.assert_array_equal(loaded.reflection.sum, [[0.2]])
+
+
 def test_result_export_refuses_silent_overwrite(tmp_path: Path) -> None:
     destination = tmp_path / "result"
     destination.mkdir()
@@ -177,6 +283,70 @@ def test_fdfd_result_export_writes_python_schema_with_raw_field(tmp_path: Path) 
     assert "Field.f" in manifest["checksums"]
     np.testing.assert_array_equal(loadmat(destination / "Field.mat")["f"], field)
     np.testing.assert_array_equal(loadmat(destination / "ER2.mat")["ER2"], er2)
+
+
+def test_fdfd_compatibility_mode_writes_metrics_and_field_aliases(tmp_path: Path) -> None:
+    wavelengths = np.array([0.51])
+    angles = np.array([0.0, 0.1])
+    field = np.array([[1 + 2j, 3 + 4j], [5 + 6j, 7 + 8j]], dtype=np.complex128)
+    er2 = np.array([[1.0, 2.25], [2.25, 1.0]])
+    result = FDFDResult(
+        TRN={"sum": np.array([[0.6, 0.7]]), "TRN0": np.array([[0.5, 0.6]])},
+        REF={"sum": np.array([[0.3, 0.2]]), "REF0": np.array([[0.2, 0.1]])},
+        f=field,
+    )
+    bundle = FDFDResultBundle(wavelengths_um=wavelengths, angles_rad=angles, result=result, er2=er2)
+
+    destination = save_fdfd_result_bundle(
+        tmp_path / "fdfd-compat",
+        bundle,
+        compatibility_mode="corrected",
+    )
+
+    metrics = np.genfromtxt(destination / "FDFD_metrics.csv", delimiter=",", names=True)
+    assert metrics.shape == (2,)
+    assert {"Field_real.csv", "Field_imag.csv", "Field_abs.csv", "ER2.csv"}.issubset(
+        {path.name for path in destination.iterdir()}
+    )
+    np.testing.assert_allclose(metrics["energy_error"], 1.0 - (metrics["TRN_sum"] + metrics["REF_sum"]))
+    np.testing.assert_array_equal(np.loadtxt(destination / "Field_real.csv", delimiter=","), field.real)
+    np.testing.assert_array_equal(np.loadtxt(destination / "Field_imag.csv", delimiter=","), field.imag)
+    manifest = json.loads((destination / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["compatibility_mode"] == "corrected"
+    assert "FDFD_metrics.csv" in manifest["files"]
+
+
+def test_fdfd_compatibility_energy_error_prefers_per_point_sum_grid(
+    tmp_path: Path,
+) -> None:
+    wavelengths = np.array([0.51, 0.52])
+    angles = np.array([0.0, 0.1])
+    trn_sum_grid = np.array([[0.2, 0.3], [0.4, 0.5]])
+    ref_sum_grid = np.array([[0.1, 0.2], [0.3, 0.4]])
+    result = FDFDResult(
+        TRN={"sum": 0.5, "sum_grid": trn_sum_grid, "TRN0": trn_sum_grid},
+        REF={"sum": 0.4, "sum_grid": ref_sum_grid, "REF0": ref_sum_grid},
+        f=np.ones((2, 2), dtype=np.complex128),
+    )
+    bundle = FDFDResultBundle(
+        wavelengths_um=wavelengths,
+        angles_rad=angles,
+        result=result,
+        er2=np.ones((2, 2)),
+    )
+
+    destination = save_fdfd_result_bundle(
+        tmp_path / "fdfd-grid-energy",
+        bundle,
+        compatibility_mode="corrected",
+    )
+
+    metrics = np.genfromtxt(destination / "FDFD_metrics.csv", delimiter=",", names=True)
+    np.testing.assert_allclose(
+        metrics["energy_error"],
+        (1.0 - trn_sum_grid - ref_sum_grid).ravel(),
+    )
+    assert not np.allclose(metrics["energy_error"], 1.0 - 0.5 - 0.4)
 
 
 def test_fdfd_export_refuses_silent_overwrite(tmp_path: Path) -> None:

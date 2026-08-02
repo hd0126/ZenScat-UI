@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, ClassVar
 
 import numpy as np
@@ -26,6 +28,7 @@ from zenscat.gui.main_window import (
 from zenscat.gui.qt_compat import (
     QT_BINDING,
     QApplication,
+    QCheckBox,
     QComboBox,
     QCoreApplication,
     QDoubleSpinBox,
@@ -40,6 +43,7 @@ from zenscat.gui.qt_compat import (
     QWidget,
 )
 from zenscat.legacy_io import LegacyResultBundle
+from zenscat.optimization import OptimizationProgress
 from zenscat.project import ProjectDocument
 
 
@@ -174,6 +178,119 @@ def test_main_window_exposes_precision_lab_shell(app: QApplication) -> None:
     assert window.findChild(QPushButton, "saveProjectButton") is not None
     assert window.findChild(QPushButton, "loadImportButton") is not None
 
+    window.close()
+
+
+def test_superset_controls_are_exposed_and_collected(app: QApplication) -> None:
+    window = MainWindow()
+    window.show()
+    _process_events()
+
+    assert window.compatibility_mode_combo.currentText() == "modern"
+    assert window.external_command_combo.isEditable()
+    assert isinstance(window.interface_smooth, QCheckBox)
+    assert window.rcwa_run_mode_combo.itemText(1) == "Harmonic convergence"
+    assert "R(+2)" in [
+        window.optimization_objective.itemText(index)
+        for index in range(window.optimization_objective.count())
+    ]
+    assert "PhC Honeycomb" in [
+        window.phc_shape_combo.itemText(index)
+        for index in range(window.phc_shape_combo.count())
+    ]
+    assert window.fdfd_polarization_combo.itemText(1) == "Both E + H"
+    assert "phase(f)" in [
+        window.fdfd_field_combo.itemText(index)
+        for index in range(window.fdfd_field_combo.count())
+    ]
+
+    window.interface_smooth.setChecked(True)
+    window.trapz_bottom.setValue(0.12)
+    window.periodic_stack.setChecked(True)
+    window.periodic_count.setValue(7)
+    window.flat_substrate.setChecked(True)
+    window.calc_fresnel.setChecked(True)
+    inputs = window.collect_inputs()
+
+    assert inputs.interface_smooth is True
+    assert inputs.trapz_w_bot == pytest.approx(0.12)
+    assert inputs.is_periodic is True
+    assert inputs.period_num == 7
+    assert inputs.flat_substrate is True
+    assert inputs.calc_fresnel is True
+    window.close()
+
+
+def test_analytic_request_forwards_superset_geometry_controls(app: QApplication) -> None:
+    window = MainWindow()
+    window.interface_combo.setCurrentText("DE4")
+    window.supergauss_sigma.setValue(0.08)
+    window.supergauss_m.setValue(4.0)
+    window.interface_smooth.setChecked(True)
+    window.periodic_stack.setChecked(True)
+    window.periodic_count.setValue(9)
+    window.flat_substrate.setChecked(True)
+    window.calc_fresnel.setChecked(True)
+
+    request = window._service.build_request(window.collect_inputs())
+
+    assert request.interface_params.smooth is True
+    assert request.interface_params.supergauss_sigma == pytest.approx(0.08)
+    assert request.interface_params.supergauss_m == pytest.approx(4.0)
+    assert request.is_periodic is True
+    assert request.period_num == 9
+    assert request.flat_substrate is True
+    assert request.calc_fresnel is True
+    window.close()
+
+
+def test_result_view_uses_heatmap_for_two_dimensional_sweep_and_slice_on_request(
+    app: QApplication,
+) -> None:
+    window = MainWindow()
+    values = np.arange(6, dtype=np.float64).reshape(2, 3) / 10
+    run = SimpleNamespace(
+        transmission=DiffractionResult(values, values, TRN0=values, sum=values),
+        reflection=DiffractionResult(values, values, REF0=values, sum=values),
+        wavelengths_m=np.array([500e-9, 510e-9]),
+        angles_rad=np.deg2rad([0.0, 2.0, 4.0]),
+        metadata={"workflow": "casual_rcwa"},
+        elapsed_s=0.01,
+    )
+    window._last_run = run
+    window.result_family_combo.setCurrentText("Transmission")
+    window.result_order_combo.setCurrentText("0")
+    window.result_view_combo.setCurrentText("Auto")
+    window._update_result_plot()
+
+    assert window.results_plot._heatmap is not None
+    assert window.results_plot._series is None
+
+    window.result_view_combo.setCurrentText("Wavelength middle")
+    window._update_result_plot()
+    assert window.results_plot._series is not None
+    assert window.results_plot._series.shape == (3,)
+    assert window.results_plot._heatmap is None
+
+    window.result_order_combo.setCurrentText("+2")
+    window._update_result_plot()
+    assert "Unavailable: Transmission order +2" in window.results_plot.accessibleName()
+    assert window.results_plot._series is None
+    window.close()
+
+
+def test_external_backend_validation_is_explicit_when_unconfigured(
+    app: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ZENSCAT_EXTERNAL_SOLVER", raising=False)
+    window = MainWindow()
+    window.backend_combo.setCurrentText("External CLI")
+    window.external_command_combo.setCurrentText("")
+
+    result = window._service.validate(window.collect_inputs())
+
+    assert result.ok is False
+    assert any("external solver command" in message.lower() for message in result.messages)
     window.close()
 
 
@@ -469,6 +586,15 @@ def test_project_round_trip_preserves_gui_state(
     window.period_um.setValue(0.42)
     window.height_um.setValue(0.08)
     window.harmonics.setValue(3)
+    window.compatibility_mode_combo.setCurrentText("corrected")
+    window.interface_combo.setCurrentText("DE4")
+    window.interface_smooth.setChecked(True)
+    window.supergauss_sigma.setValue(0.09)
+    window.periodic_stack.setChecked(True)
+    window.periodic_count.setValue(5)
+    window.flat_substrate.setChecked(True)
+    window.calc_fresnel.setChecked(True)
+    window.result_view_combo.setCurrentText("Wavelength middle")
     window.nx_input.setValue(64)
     window.nz_input.setValue(4)
     window.layer_table.item(0, 1).setText("0.200")
@@ -486,6 +612,15 @@ def test_project_round_trip_preserves_gui_state(
     assert restored.period_um.value() == pytest.approx(0.42)
     assert restored.height_um.value() == pytest.approx(0.08)
     assert restored.harmonics.value() == 3
+    assert restored.compatibility_mode_combo.currentText() == "corrected"
+    assert restored.interface_combo.currentText() == "DE4"
+    assert restored.interface_smooth.isChecked() is True
+    assert restored.supergauss_sigma.value() == pytest.approx(0.09)
+    assert restored.periodic_stack.isChecked() is True
+    assert restored.periodic_count.value() == 5
+    assert restored.flat_substrate.isChecked() is True
+    assert restored.calc_fresnel.isChecked() is True
+    assert restored.result_view_combo.currentText() == "Wavelength middle"
     assert restored.nx_input.value() == 64
     assert restored.nz_input.value() == 4
     assert restored.layer_table.item(0, 1).text() == "0.2"
@@ -503,6 +638,8 @@ def test_project_round_trip_preserves_gui_state(
         ("optimization", "Optimize"),
         ("fdfd_fields", "FDFD Fields"),
         ("casual_phc_rcwa", "RCWA Sweep"),
+        ("harmonic_convergence", "RCWA Sweep"),
+        ("phc_fdfd_fields", "FDFD Fields"),
     ],
 )
 def test_project_round_trip_preserves_active_workflow(
@@ -518,6 +655,13 @@ def test_project_round_trip_preserves_active_workflow(
         _select_nav(window, "Optimize")
     elif workflow == "fdfd_fields":
         _select_nav(window, "FDFD Fields")
+    elif workflow == "phc_fdfd_fields":
+        window.phc_shape_combo.setCurrentText("PhC Rectangle")
+        window.fdfd_geometry_combo.setCurrentText("Selected PhC")
+        _select_nav(window, "FDFD Fields")
+    elif workflow == "harmonic_convergence":
+        _select_nav(window, "RCWA Sweep")
+        window.rcwa_run_mode_combo.setCurrentText("Harmonic convergence")
     elif workflow == "casual_phc_rcwa":
         _select_nav(window, "RCWA Sweep")
         window.phc_shape_combo.setCurrentText("PhC Rectangle")
@@ -540,6 +684,10 @@ def test_project_round_trip_preserves_active_workflow(
         assert restored._import_path == tmp_path / "device.py.npy"
     if workflow == "casual_phc_rcwa":
         assert restored.phc_shape_combo.currentText() == "PhC Rectangle"
+    if workflow == "harmonic_convergence":
+        assert restored.rcwa_run_mode_combo.currentText() == "Harmonic convergence"
+    if workflow == "phc_fdfd_fields":
+        assert restored.fdfd_geometry_combo.currentText() == "Selected PhC"
 
     restored.close()
     window.close()
@@ -669,12 +817,23 @@ def test_validation_run_small_grid_and_export_gating(
     assert window.cancel_button.isEnabled() is False
     assert window.export_button.isEnabled() is True
     assert "Computed analytic RCWA results" in window.results_text.toPlainText()
-    assert "computed TRN0 and REF0" in window.results_plot.accessibleName()
+    assert "computed Transmission 0" in window.results_plot.accessibleName()
+    navigation_states = {
+        str(window.nav_list.item(index).data(Qt.ItemDataRole.UserRole)):
+        window.nav_list.item(index).text()
+        for index in range(window.nav_list.count())
+    }
+    assert navigation_states["Results"] == "Results\nready"
+    assert navigation_states["Jobs"] == "Jobs\nidle"
 
     destination = window.export_results_to(tmp_path / "gui-result")
     assert (destination / "TRN.mat").is_file()
     assert (destination / "REF.mat").is_file()
     assert (destination / "manifest.json").is_file()
+    assert (destination / "Data.txt").is_file()
+    assert (destination / "RCWA_plot_data.csv").is_file()
+    assert (destination / "Selected_result.png").is_file()
+    assert (destination / "Selected_result.svg").is_file()
 
     window.close()
 
@@ -706,7 +865,7 @@ def test_gui_export_uses_default_no_overwrite(
     destination = window.export_results_to(tmp_path / "safe-export")
 
     assert destination == tmp_path / "safe-export"
-    assert captured["kwargs"] == {}
+    assert captured["kwargs"] == {"compatibility_mode": "modern"}
 
     window.close()
 
@@ -770,6 +929,77 @@ def test_optimize_page_runs_real_bounded_objective(
     window.close()
 
 
+def test_optimize_page_updates_merit_history_during_progress(app: QApplication) -> None:
+    window = MainWindow()
+    window.show()
+    _select_nav(window, "Optimize")
+
+    assert "No computed results" in window.optimize_plot.accessibleName()
+
+    window._on_optimization_progress(
+        OptimizationProgress(
+            generation=7,
+            evaluations=42,
+            best_fitness=0.125,
+            best_parameters=np.asarray([0.32, 0.15, 0.18], dtype=np.float64),
+        )
+    )
+    _process_events()
+
+    assert "computed best fitness" in window.optimize_plot.accessibleName()
+    assert "Generation 7" in window.optimization_status.text()
+    assert "0.125" in window.optimization_status.text()
+
+    window.close()
+
+
+def test_optimize_worker_streams_and_retains_partial_merit_history(
+    app: QApplication,
+) -> None:
+    class StreamingOptimizationService:
+        def validate(self, _inputs):
+            return ValidationResult(True, ("ok",), "ready")
+
+        def run(self, _inputs, cancel_event, progress):
+            merit_progress = progress.optimization
+            for generation, fitness in enumerate((-0.1, -0.2, -0.3), start=1):
+                merit_progress(
+                    SimpleNamespace(
+                        generation=generation,
+                        evaluations=generation * 5,
+                        current_fitness=fitness + 0.05,
+                        best_fitness=fitness,
+                    )
+                )
+                progress(generation, 100)
+                time.sleep(0.01)
+            while not cancel_event.wait(0.002):
+                pass
+            raise RuntimeError("simulation cancelled")
+
+    window = MainWindow(service=StreamingOptimizationService())
+    window.show()
+    _select_nav(window, "Optimize")
+    window.validate_button.click()
+    _process_events()
+
+    window.run_button.click()
+    _wait_until(lambda: len(window._optimization_history) == 3)
+
+    assert "computed best fitness (live)" in window.optimize_plot.accessibleName()
+    assert np.allclose(window.optimize_plot._series, [-0.1, -0.2, -0.3])
+    assert "Generation 3/100" in window.optimization_status.text()
+    assert "current -0.25" in window.optimization_status.text()
+    assert "best -0.3" in window.optimization_status.text()
+
+    window.cancel_button.click()
+    _wait_until(lambda: window._thread is None)
+
+    assert "Partial merit history retained" in window.optimization_status.text()
+    assert np.allclose(window.optimize_plot._series, [-0.1, -0.2, -0.3])
+    window.close()
+
+
 def test_fdfd_page_runs_fields_updates_view_and_exports(
     app: QApplication, tmp_path: Path
 ) -> None:
@@ -798,9 +1028,9 @@ def test_fdfd_page_runs_fields_updates_view_and_exports(
     window.fdfd_field_combo.setCurrentText("real(f)")
     _process_events()
     assert "real(f) heatmap" in window.field_plot.accessibleName()
-    window.fdfd_field_combo.setCurrentText("ER2")
+    window.fdfd_field_combo.setCurrentText("ER2 + contours")
     _process_events()
-    assert "ER2 heatmap" in window.field_plot.accessibleName()
+    assert "ER2 + contours heatmap" in window.field_plot.accessibleName()
 
     destination = window.export_results_to(tmp_path / "fdfd-result")
     assert (destination / "Field.mat").is_file()
@@ -838,6 +1068,140 @@ def test_phc_rectangle_workflow_runs_and_result_selectors_update(
     _process_events()
     assert "Energy sum" in window.results_plot.accessibleName()
 
+    window.close()
+
+
+def test_harmonic_convergence_runs_and_recommends_from_gui(app: QApplication) -> None:
+    window = MainWindow()
+    window.show()
+    _set_small_run(window)
+    _select_nav(window, "RCWA Sweep")
+    window.rcwa_run_mode_combo.setCurrentText("Harmonic convergence")
+    window.convergence_max_harmonics.setValue(2)
+    window.convergence_tolerance.setValue(1.0)
+
+    window.validate_button.click()
+    _process_events()
+    assert window.run_button.isEnabled() is True
+    window.run_button.click()
+    _wait_until(lambda: window._thread is None and window._last_run is not None)
+
+    assert len(window._last_run.samples) == 2
+    assert window._last_run.metadata["workflow"] == "harmonic_convergence"
+    assert "Computed harmonic convergence" in window.results_text.toPlainText()
+    assert "harmonic energy error" in window.sweep_plot.accessibleName()
+    window.close()
+
+
+def test_dual_fdfd_gui_shows_and_exports_both_polarizations(
+    app: QApplication, tmp_path: Path
+) -> None:
+    window = MainWindow()
+    window.show()
+    _set_small_run(window)
+    _select_nav(window, "FDFD Fields")
+    _set_tiny_fdfd(window)
+    window.fdfd_polarization_combo.setCurrentText("Both E + H")
+
+    window.validate_button.click()
+    _process_events()
+    window.run_button.click()
+    _wait_until(lambda: window._thread is None and window._last_run is not None)
+
+    assert window._last_run.metadata["workflow"] == "dual_fdfd_fields"
+    assert "computed abs(f) heatmap" in window.field_plot.accessibleName()
+    assert "computed abs(f) heatmap" in window.field_plot_h.accessibleName()
+    assert window.field_plot_h.isVisible()
+    destination = window.export_results_to(tmp_path / "dual-fdfd")
+    assert (destination / "E" / "Field.mat").is_file()
+    assert (destination / "H" / "Field.mat").is_file()
+    assert (destination / "manifest.json").is_file()
+    window.close()
+
+
+def test_corrected_phc_fdfd_runs_from_gui(app: QApplication) -> None:
+    window = MainWindow()
+    window.show()
+    _set_small_run(window)
+    window.phc_shape_combo.setCurrentText("PhC Honeycomb")
+    _select_nav(window, "FDFD Fields")
+    _set_tiny_fdfd(window)
+    window.fdfd_geometry_combo.setCurrentText("Selected PhC")
+    window.compatibility_mode_combo.setCurrentText("corrected")
+
+    window.validate_button.click()
+    _process_events()
+    assert window.run_button.isEnabled() is True
+    window.run_button.click()
+    _wait_until(lambda: window._thread is None and window._last_run is not None)
+
+    assert window._last_run.metadata["workflow"] == "phc_fdfd_fields"
+    assert window._last_run.metadata["legacy_exact"] is False
+    assert "Computed FDFD field results" in window.results_text.toPlainText()
+    window.close()
+
+
+def test_optimization_checkpoint_is_written_and_loadable(
+    app: QApplication, tmp_path: Path
+) -> None:
+    checkpoint_path = tmp_path / "optimizer-checkpoint.json"
+    window = MainWindow()
+    window.show()
+    _set_small_run(window)
+    _select_nav(window, "Optimize")
+    _set_tiny_optimization(window)
+    window.optimization_checkpoint.setCurrentText(str(checkpoint_path))
+
+    window.validate_button.click()
+    _process_events()
+    window.run_button.click()
+    _wait_until(lambda: window._thread is None and window._last_run is not None)
+
+    payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert payload["generations_completed"] >= 1
+    window.optimization_resume.setChecked(True)
+    request = window._service.build_request(window.collect_inputs())
+    assert request.checkpoint["best_parameters"] == payload["best_parameters"]
+    window.close()
+
+
+def test_external_cli_backend_executes_registered_solver(
+    app: QApplication, tmp_path: Path
+) -> None:
+    solver = tmp_path / "external_solver.py"
+    solver.write_text(
+        """
+import argparse, json
+parser = argparse.ArgumentParser()
+parser.add_argument('--zenscat-request')
+parser.add_argument('--zenscat-result')
+args = parser.parse_args()
+result = {
+  'schema': 'zenscat.external-result', 'kind': 'rcwa',
+  'wavelengths_m': [5.1e-7], 'angles_rad': [0.0],
+  'transmission': {'minus_1': [[0.0]], 'plus_1': [[0.0]], 'TRN0': [[0.7]], 'sum': [[0.7]]},
+  'reflection': {'minus_1': [[0.0]], 'plus_1': [[0.0]], 'REF0': [[0.3]], 'sum': [[0.3]]},
+  'metadata': {'workflow': 'external_rcwa'}
+}
+with open(args.zenscat_result, 'w', encoding='utf-8') as stream:
+    json.dump(result, stream)
+""",
+        encoding="utf-8",
+    )
+    window = MainWindow()
+    window.show()
+    _set_small_run(window)
+    window.backend_combo.setCurrentText("External CLI")
+    window.external_command_combo.setCurrentText(f'"{sys.executable}" "{solver}"')
+
+    window.validate_button.click()
+    _process_events()
+    assert window.run_button.isEnabled() is True
+    window.run_button.click()
+    _wait_until(lambda: window._thread is None and window._last_run is not None)
+
+    assert window._last_run.metadata["backend"] == "external"
+    assert window._last_run.transmission.TRN0.item() == pytest.approx(0.7)
     window.close()
 
 

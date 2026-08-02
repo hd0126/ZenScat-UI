@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -24,7 +24,14 @@ from .rcwa1d import (
     redheffer_star,
 )
 
-PhCInterface = Literal["PhC_rec_circ", "PhC_rec_square", "PhC_hex_columns"]
+PhCInterface = Literal[
+    "PhC_rec_circ",
+    "PhC_rec_square",
+    "PhC_hex_columns",
+    "PhC_honeycomb",
+    "PhC_hex_columns_rot",
+    "PhC_hex_polygon",
+]
 Mode = Literal["E", "H"]
 RepeatMode = Literal["legacy", "corrected"]
 FloatArray = NDArray[np.float64]
@@ -42,6 +49,7 @@ class PhCInterfaceParams:
     ay: float = 0.5
     ellipse_rot_angle: float = 15.0
     radius_star_ellipse: float = 0.45
+    hex_rot_angle: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -91,6 +99,7 @@ class PhCDevice:
     ERC_bot: ComplexArray | None = None
     sub_L_top: FloatArray | None = None
     sub_L_bot: FloatArray | None = None
+    geometry: dict[str, Any] | None = None
 
     def unit_device(self) -> Device1D:
         return Device1D(self.ERC, self.sub_L)
@@ -116,8 +125,15 @@ def build_phc_grid(
     values = np.asarray(params, dtype=np.float64).ravel()
     if values.size < 3:
         raise ValueError("PhC params must be [pitch_um, n_background, n_inclusion]")
-    if interface not in {"PhC_rec_circ", "PhC_rec_square", "PhC_hex_columns"}:
-        raise NotImplementedError("only rectangle, ellipse, and hex-column PhC interfaces are implemented")
+    if interface not in {
+        "PhC_rec_circ",
+        "PhC_rec_square",
+        "PhC_hex_columns",
+        "PhC_honeycomb",
+        "PhC_hex_columns_rot",
+        "PhC_hex_polygon",
+    }:
+        raise NotImplementedError(f"unsupported PhC interface: {interface}")
     if values[0] <= 0:
         raise ValueError("PhC pitch must be positive")
     if Nx <= 0 or Nz <= 1:
@@ -166,6 +182,11 @@ def build_phc_device(
     is_bot = False
     er_top = er_bot = None
     sub_l_top = sub_l_bot = None
+    geometry: dict[str, Any] = {
+        "interface": interface,
+        "compatibility": "legacy_exact",
+        "semantics": "legacy Device_3.m geometry",
+    }
 
     if interface == "PhC_rec_circ":
         if interface_params.ax == 0 or interface_params.ay == 0:
@@ -221,10 +242,88 @@ def build_phc_device(
         step_size = a * np.sqrt(3) / grid.Nz
         is_top = True
         is_bot = True
+    elif interface == "PhC_honeycomb":
+        x = np.linspace(-a / 2, a / 2, grid.Nx)
+        y = np.sqrt(3) * np.linspace(-a / 2, a / 2, grid.Nz)
+        b1 = float(np.max(x))
+        b2 = float(np.max(y))
+        X, Y = np.meshgrid(x, y)
+
+        er_1_mask = np.zeros_like(X, dtype=np.bool_)
+        er_1_mask = er_1_mask | ((X - b1) ** 2 + (Y + b2) ** 2 <= radius**2)
+        er_1_mask = er_1_mask | ((X + b1) ** 2 + (Y - b2) ** 2 <= radius**2)
+        er_1_mask = er_1_mask | ((X + b1) ** 2 + (Y + b2) ** 2 <= radius**2)
+        er_1_mask = er_1_mask | ((X - b1) ** 2 + (Y - b2) ** 2 <= radius**2)
+
+        er_2_mask = X**2 + Y**2 <= radius**2
+        er_2_mask = er_2_mask | ((X - b1) ** 2 + (Y + b2) ** 2 <= radius**2)
+        er_2_mask = er_2_mask | ((X + b1) ** 2 + (Y + b2) ** 2 <= radius**2)
+
+        er_3_mask = X**2 + Y**2 <= radius**2
+        er_3_mask = er_3_mask | ((X + b1) ** 2 + (Y - b2) ** 2 <= radius**2)
+        er_3_mask = er_3_mask | ((X - b1) ** 2 + (Y - b2) ** 2 <= radius**2)
+
+        er = _materialize(np.vstack([er_1_mask, er_2_mask, er_3_mask]), grid)
+        er_top = _materialize(er_3_mask, grid)
+        er_bot = _materialize(er_2_mask, grid)
+        step_size = a * np.sqrt(3) / grid.Nz
+        sub_l_top = np.ones(grid.Nz, dtype=np.float64) * step_size * 1e-6
+        sub_l_bot = sub_l_top.copy()
+        is_top = True
+        is_bot = True
+        geometry = {
+            "interface": interface,
+            "compatibility": "corrected",
+            "semantics": "corrected legacy Device_3.m honeycomb branch with three vertical unit slices",
+            "unit_slices": 3,
+        }
+    elif interface == "PhC_hex_columns_rot":
+        x = np.sqrt(3) * np.linspace(-a / 2, a / 2, grid.Nx)
+        y = np.linspace(-a / 2, a / 2, grid.Nz)
+        er_mask, er_top_mask, er_bot_mask = _hex_column_masks(
+            x,
+            y,
+            radius,
+            top_rows=int(np.floor(grid.Nz / 2)),
+        )
+        er = _materialize(er_mask, grid)
+        er_top = _materialize(er_top_mask, grid)
+        er_bot = _materialize(er_bot_mask, grid)
+        step_size = a / grid.Nz
+        top_step = (a / 2) / max(er_top_mask.shape[0] - 1, 1)
+        sub_l_top = np.ones(er_top_mask.shape[0], dtype=np.float64) * top_step * 1e-6
+        sub_l_bot = sub_l_top.copy()
+        is_top = True
+        is_bot = True
+        geometry = {
+            "interface": interface,
+            "compatibility": "corrected",
+            "semantics": "corrected rotated hexagonal column lattice",
+            "orientation": "rotated_hex_lattice",
+        }
+    elif interface == "PhC_hex_polygon":
+        x = np.linspace(-a / 2, a / 2, grid.Nx)
+        y = np.linspace(-a / 2, a / 2, grid.Nz)
+        X, Y = np.meshgrid(x, y)
+        er_mask = _regular_hex_mask(
+            X,
+            Y,
+            circumradius=radius,
+            rotation_deg=interface_params.hex_rot_angle,
+        )
+        er = _materialize(er_mask, grid)
+        step_size = a / grid.Nz
+        geometry = {
+            "interface": interface,
+            "compatibility": "corrected",
+            "semantics": "corrected regular hexagonal polygon inclusion",
+            "rotation_deg": float(interface_params.hex_rot_angle),
+        }
     else:
         raise NotImplementedError(f"unsupported PhC interface: {interface}")
 
-    sub_l = np.ones(grid.Nz, dtype=np.float64) * step_size * 1e-6
+    sub_layer_count = er.shape[0]
+    sub_l = np.ones(sub_layer_count, dtype=np.float64) * step_size * 1e-6
     erc = convmat1d(er, harmonic_count)
     erc_top = convmat1d(er_top, harmonic_count) if er_top is not None else None
     erc_bot = convmat1d(er_bot, harmonic_count) if er_bot is not None else None
@@ -240,6 +339,7 @@ def build_phc_device(
         ERC_bot=erc_bot,
         sub_L_top=sub_l_top,
         sub_L_bot=sub_l_bot,
+        geometry=geometry,
     )
 
 
@@ -274,10 +374,14 @@ def launch_rcwa_s_phc(
     sweep_shape = (solver_grid.Lam0.size, solver_grid.Theta.size)
     trn_minus_1 = np.zeros(sweep_shape, dtype=np.float64)
     trn_plus_1 = np.zeros(sweep_shape, dtype=np.float64)
+    trn_minus_2 = np.zeros(sweep_shape, dtype=np.float64) if harmonic_count >= 2 else None
+    trn_plus_2 = np.zeros(sweep_shape, dtype=np.float64) if harmonic_count >= 2 else None
     trn0 = np.zeros(sweep_shape, dtype=np.float64)
     trn_sum = np.zeros(sweep_shape, dtype=np.float64)
     ref_minus_1 = np.zeros(sweep_shape, dtype=np.float64)
     ref_plus_1 = np.zeros(sweep_shape, dtype=np.float64)
+    ref_minus_2 = np.zeros(sweep_shape, dtype=np.float64) if harmonic_count >= 2 else None
+    ref_plus_2 = np.zeros(sweep_shape, dtype=np.float64) if harmonic_count >= 2 else None
     ref0 = np.zeros(sweep_shape, dtype=np.float64)
     ref_sum = np.zeros(sweep_shape, dtype=np.float64)
     mode_list = _normalize_modes(modes)
@@ -345,10 +449,16 @@ def launch_rcwa_s_phc(
 
                 ref_minus_1[lam_index, theta_index] = r[size // 2 - 1]
                 ref_plus_1[lam_index, theta_index] = r[size // 2 + 1]
+                if ref_minus_2 is not None and ref_plus_2 is not None:
+                    ref_minus_2[lam_index, theta_index] = r[size // 2 - 2]
+                    ref_plus_2[lam_index, theta_index] = r[size // 2 + 2]
                 ref0[lam_index, theta_index] = r[size // 2]
                 ref_sum[lam_index, theta_index] = abs(np.sum(r))
                 trn_minus_1[lam_index, theta_index] = t[size // 2 - 1]
                 trn_plus_1[lam_index, theta_index] = t[size // 2 + 1]
+                if trn_minus_2 is not None and trn_plus_2 is not None:
+                    trn_minus_2[lam_index, theta_index] = t[size // 2 - 2]
+                    trn_plus_2[lam_index, theta_index] = t[size // 2 + 2]
                 trn0[lam_index, theta_index] = t[size // 2]
                 trn_sum[lam_index, theta_index] = abs(np.sum(t))
                 completed_points += 1
@@ -356,8 +466,22 @@ def launch_rcwa_s_phc(
                     progress(completed_points, total_points)
 
     return (
-        DiffractionResult(trn_minus_1, trn_plus_1, TRN0=trn0, sum=trn_sum),
-        DiffractionResult(ref_minus_1, ref_plus_1, REF0=ref0, sum=ref_sum),
+        DiffractionResult(
+            trn_minus_1,
+            trn_plus_1,
+            TRN0=trn0,
+            sum=trn_sum,
+            minus_2=trn_minus_2,
+            plus_2=trn_plus_2,
+        ),
+        DiffractionResult(
+            ref_minus_1,
+            ref_plus_1,
+            REF0=ref0,
+            sum=ref_sum,
+            minus_2=ref_minus_2,
+            plus_2=ref_plus_2,
+        ),
     )
 
 
@@ -384,6 +508,47 @@ def _repeat_unit_cell(
 
 def _materialize(mask: NDArray[np.bool_], grid: PhCGrid) -> FloatArray:
     return (grid.erIdx[1] - grid.erIdx[0]) * mask.astype(np.float64) + grid.erIdx[0]
+
+
+def _hex_column_masks(
+    x: FloatArray,
+    y: FloatArray,
+    radius: float,
+    *,
+    top_rows: int,
+) -> tuple[NDArray[np.bool_], NDArray[np.bool_], NDArray[np.bool_]]:
+    b1 = float(np.max(x))
+    b2 = float(np.max(y))
+    X, Y = np.meshgrid(x, y)
+    mask = X**2 + Y**2 <= radius**2
+    mask = mask | ((X - b1) ** 2 + (Y + b2) ** 2 <= radius**2)
+    mask = mask | ((X + b1) ** 2 + (Y - b2) ** 2 <= radius**2)
+    mask = mask | ((X + b1) ** 2 + (Y + b2) ** 2 <= radius**2)
+    mask = mask | ((X - b1) ** 2 + (Y - b2) ** 2 <= radius**2)
+
+    y_top = np.linspace(0, max(abs(float(np.min(y))), abs(float(np.max(y)))), max(top_rows, 1))
+    X_top, Y_top = np.meshgrid(x, y_top)
+    top = (X_top - b1) ** 2 + (Y_top - np.max(y_top)) ** 2 <= radius**2
+    top = top | ((X_top + b1) ** 2 + (Y_top - np.max(y_top)) ** 2 <= radius**2)
+    bot = (X_top - b1) ** 2 + Y_top**2 <= radius**2
+    bot = bot | ((X_top + b1) ** 2 + Y_top**2 <= radius**2)
+    return mask, top, bot
+
+
+def _regular_hex_mask(
+    x: FloatArray,
+    y: FloatArray,
+    *,
+    circumradius: float,
+    rotation_deg: float,
+) -> NDArray[np.bool_]:
+    theta = np.deg2rad(rotation_deg)
+    xr = x * np.cos(theta) - y * np.sin(theta)
+    yr = x * np.sin(theta) + y * np.cos(theta)
+    qx = np.abs(xr)
+    qy = np.abs(yr)
+    apothem = circumradius * np.sqrt(3) / 2
+    return (qx <= circumradius) & (np.sqrt(3) * qx + qy <= 2 * apothem)
 
 
 def _apply_legacy_fresnel_correction(

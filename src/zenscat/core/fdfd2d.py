@@ -387,6 +387,8 @@ def fdfd_2d(
 
     trn0 = np.zeros((grid.Lam0.size, grid.Theta.size), dtype=np.float64)
     ref0 = np.zeros_like(trn0)
+    trn_sum_grid = np.zeros_like(trn0)
+    ref_sum_grid = np.zeros_like(trn0)
     ref_minus1 = np.zeros_like(trn0)
     ref_plus1 = np.zeros_like(trn0)
     trn_plus1 = np.zeros_like(trn0)
@@ -453,14 +455,20 @@ def fdfd_2d(
                 tde = np.abs(atrn) ** 2 * np.real(erref / ertrn * kytrn / ky_inc)
 
             idx0 = int(np.flatnonzero(m_orders == 0)[0])
-            idx_minus1 = int(np.flatnonzero(m_orders == -1)[0])
-            idx_plus1 = int(np.flatnonzero(m_orders == 1)[0])
+            minus_candidates = np.flatnonzero(m_orders == -1)
+            plus_candidates = np.flatnonzero(m_orders == 1)
+            idx_minus1 = int(minus_candidates[0]) if minus_candidates.size else None
+            idx_plus1 = int(plus_candidates[0]) if plus_candidates.size else None
             trn0[i, j] = tde[idx0]
             ref0[i, j] = rde[idx0]
-            ref_minus1[i, j] = rde[idx_minus1]
-            ref_plus1[i, j] = rde[idx_plus1]
-            trn_plus1[i, j] = tde[idx_plus1]
-            trn_minus1[i, j] = tde[idx_minus1]
+            trn_sum_grid[i, j] = float(np.sum(tde))
+            ref_sum_grid[i, j] = float(np.sum(rde))
+            if idx_minus1 is not None:
+                ref_minus1[i, j] = rde[idx_minus1]
+                trn_minus1[i, j] = tde[idx_minus1]
+            if idx_plus1 is not None:
+                ref_plus1[i, j] = rde[idx_plus1]
+                trn_plus1[i, j] = tde[idx_plus1]
             final_tde = tde
             final_rde = rde
             completed_points += 1
@@ -469,14 +477,17 @@ def fdfd_2d(
 
     trn = {
         "sum": float(np.sum(final_tde)),
+        "sum_grid": trn_sum_grid,
         "TRN0": trn0,
         "TRN_plus1": trn_plus1,
         "TRN_minus1": trn_minus1,
     }
     ref = {
         "sum": float(np.sum(final_rde)),
+        "sum_grid": ref_sum_grid,
         "REF0": ref0,
         "REF_plus1": ref_plus1,
+        "REF_minus1": ref_minus1,
         "TRN_minus1": trn_minus1,
     }
     return FDFDResult(TRN=trn, REF=ref, f=final_f)
